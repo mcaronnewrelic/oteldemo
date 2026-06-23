@@ -1,0 +1,141 @@
+# BROKEN: Module 12 Exercise 2C — find and fix the tail sampling configuration
+# =============================================================================
+# This config has a deliberate bug: the tailsampling processor has num_traces
+# set to 50, which is far too low for the lab's default load of 10 rps.
+#
+# Why it matters:
+#   num_traces controls how many in-flight traces the tail sampler can hold
+#   in memory simultaneously while waiting for all spans to arrive before
+#   making a sampling decision.
+#
+#   At 10 rps with a 10-second decision_wait window, the sampler needs to
+#   buffer approximately 10 rps × 10s = 100 traces at any given moment,
+#   BEFORE accounting for multi-span traces. A buffer of 50 is immediately
+#   exhausted, causing the processor to evict traces before their spans have
+#   all arrived — resulting in those traces being dropped entirely.
+#
+# Symptom to observe:
+#   - Collector runs without errors in its own logs
+#   - otelcol_processor_tail_sampling_sampling_decision_timer_firing_time
+#     metric shows very frequent evictions
+#   - Only a small fraction of traces appear in New Relic
+#   - The traces that DO appear are often incomplete (missing spans)
+#   - NRQL: SELECT count(*) FROM Span TIMESERIES shows far fewer spans than
+#     the load generator is sending
+#
+# How to spot the bug:
+#   Inspect tailsampling.num_traces. At 10 rps with a 10s decision window,
+#   a safe minimum is 5000. 50 is 100x too small.
+#
+# Fix:
+#   Increase num_traces to at least 5000:
+#     num_traces: 5000
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4320
+
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-gateway-self
+          scrape_interval: 10s
+          static_configs:
+            - targets:
+                - localhost:8888
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 768
+    spike_limit_mib: 192
+
+  tailsampling:
+    decision_wait: 10s
+    # BUG: num_traces is 50 — far too low for 10 rps load.
+    # At 10 rps × 10s decision_wait, at least 100 traces must be buffered,
+    # and in practice 5000+ is needed for a stable buffer.
+    num_traces: 50
+    expected_new_traces_per_sec: 10
+    policies:
+      - name: errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+
+      - name: slow-traces
+        type: latency
+        latency:
+          threshold_ms: 500
+
+      - name: premium-tier
+        type: string_attribute
+        string_attribute:
+          key: user.tier
+          values: [premium]
+
+      - name: remainder-sample
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 5
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: lab
+        action: upsert
+      - key: collector.tier
+        value: gateway
+        action: upsert
+
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 60s
+
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tailsampling, resource, batch]
+      exporters: [otlphttp/newrelic, debug]
+
+    metrics:
+      receivers: [otlp, prometheus/self]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/newrelic]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlphttp/newrelic]

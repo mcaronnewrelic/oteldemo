@@ -1,0 +1,22 @@
+{
+  "name": "order-service",
+  "version": "1.0.0",
+  "description": "OTel Mastery Lab — order-service demo application",
+  "main": "order-service.js",
+  "scripts": {
+    "start": "node order-service.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "@opentelemetry/sdk-node": "^0.51.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.46.1",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.51.1",
+    "@opentelemetry/exporter-metrics-otlp-grpc": "^0.51.1",
+    "@opentelemetry/api": "^1.8.0",
+    "@opentelemetry/sdk-metrics": "^1.24.1",
+    "uuid": "^9.0.1"
+  }
+}

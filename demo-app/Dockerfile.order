@@ -1,0 +1,14 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies first (layer-cached separately from source)
+COPY package.json ./
+RUN npm install --omit=dev
+
+# Copy application source
+COPY order-service.js ./
+
+EXPOSE 8080
+
+CMD ["node", "order-service.js"]

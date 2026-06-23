@@ -1,0 +1,179 @@
+version: "3.9"
+
+# =============================================================================
+# OTel Mastery Lab — Docker Compose Stack
+# =============================================================================
+# Prerequisites: copy .env.example to .env and set NR_LICENSE_KEY.
+# Start:  docker compose up -d
+# Stop:   docker compose down
+# Reset:  docker compose down -v
+# =============================================================================
+
+networks:
+  otel-lab:
+    driver: bridge
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # order-service — Node.js/Express demo application
+  # Receives HTTP POST /orders, creates OTel spans, calls payment-service.
+  # Exports telemetry to otelcol-agent via OTLP/gRPC.
+  # ---------------------------------------------------------------------------
+  order-service:
+    build:
+      context: ./demo-app
+      dockerfile: Dockerfile.order
+    container_name: order-service
+    ports:
+      - "8080:8080"
+    environment:
+      # OpenTelemetry SDK configuration
+      OTEL_SERVICE_NAME: order-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otelcol-agent:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=lab,service.version=1.0.0
+      # Application configuration
+      PORT: "8080"
+      PAYMENT_SERVICE_URL: http://payment-service:8081
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SIMULATE_ERRORS: ${SIMULATE_ERRORS:-false}
+    networks:
+      - otel-lab
+    depends_on:
+      otelcol-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # payment-service — Python/Flask demo application
+  # Processes payments, generates custom metrics, writes structured logs.
+  # Exports telemetry to otelcol-agent via OTLP/gRPC.
+  # ---------------------------------------------------------------------------
+  payment-service:
+    build:
+      context: ./demo-app
+      dockerfile: Dockerfile.payment
+    container_name: payment-service
+    ports:
+      - "8081:8081"
+    environment:
+      # OpenTelemetry SDK configuration
+      OTEL_SERVICE_NAME: payment-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otelcol-agent:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=lab,service.version=1.0.0
+      # Application configuration
+      PORT: "8081"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SIMULATE_SLOW: ${SIMULATE_SLOW:-false}
+    networks:
+      - otel-lab
+    depends_on:
+      otelcol-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # otelcol-agent — OpenTelemetry Collector (agent tier)
+  # Receives OTLP from both app services, exports to New Relic.
+  # Self-metrics available at http://localhost:8888/metrics (Prometheus format).
+  # Health check at http://localhost:13133.
+  # ---------------------------------------------------------------------------
+  otelcol-agent:
+    image: otel/opentelemetry-collector-contrib:0.100.0
+    container_name: otelcol-agent
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./configs/${COLLECTOR_CONFIG:-collector-agent.yaml}:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+      - "8888:8888"    # Prometheus self-metrics
+      - "13133:13133"  # Health check extension
+    environment:
+      NR_LICENSE_KEY: ${NR_LICENSE_KEY:?NR_LICENSE_KEY is required. Copy .env.example to .env and set the value.}
+      NR_OTLP_ENDPOINT: ${NR_OTLP_ENDPOINT:-https://otlp.nr-data.net}
+    networks:
+      - otel-lab
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:13133"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # otelcol-gateway — OpenTelemetry Collector (gateway tier)
+  # Used in L301 two-tier architecture exercises (Module 9).
+  # Receives OTLP from otelcol-agent on port 4320, applies tail sampling,
+  # then exports to New Relic.
+  # This service starts but is effectively bypassed in L101/L201 because
+  # otelcol-agent exports directly to NR in those configs.
+  # ---------------------------------------------------------------------------
+  otelcol-gateway:
+    image: otel/opentelemetry-collector-contrib:0.100.0
+    container_name: otelcol-gateway
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./configs/collector-gateway.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4320:4320"    # OTLP gRPC receiver (from agent)
+      - "8889:8888"    # Prometheus self-metrics (mapped to 8889 to avoid conflict)
+    environment:
+      NR_LICENSE_KEY: ${NR_LICENSE_KEY:?NR_LICENSE_KEY is required.}
+      NR_OTLP_ENDPOINT: ${NR_OTLP_ENDPOINT:-https://otlp.nr-data.net}
+    networks:
+      - otel-lab
+    depends_on:
+      otelcol-agent:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # load-generator — Continuous HTTP traffic to order-service
+  # Sends LOAD_RATE requests per second in a loop.
+  # Randomizes user_tier between standard and premium.
+  # Stop:    docker compose stop load-generator
+  # Restart: LOAD_RATE=5 docker compose up -d load-generator
+  # ---------------------------------------------------------------------------
+  load-generator:
+    image: curlimages/curl:latest
+    container_name: load-generator
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        RATE=${LOAD_RATE:-10}
+        SLEEP_MS=$(echo "scale=4; 1/$RATE" | bc 2>/dev/null || echo "0.1")
+        echo "Load generator starting: ${RATE} rps (sleep ${SLEEP_MS}s between requests)"
+        while true; do
+          TIER=$( [ $(( RANDOM % 2 )) -eq 0 ] && echo "premium" || echo "standard" )
+          QTY=$(( (RANDOM % 20) + 1 ))
+          ITEMS="widget gadget component module package"
+          ITEM=$(echo $ITEMS | tr ' ' '\n' | sed -n "$((RANDOM % 5 + 1))p")
+          curl -s -o /dev/null -w "" -X POST http://order-service:8080/orders \
+            -H "Content-Type: application/json" \
+            -d "{\"item\":\"${ITEM}\",\"quantity\":${QTY},\"user_tier\":\"${TIER}\"}"
+          sleep "${SLEEP_MS}"
+        done
+    environment:
+      LOAD_RATE: ${LOAD_RATE:-10}
+    networks:
+      - otel-lab
+    depends_on:
+      order-service:
+        condition: service_healthy
+    restart: unless-stopped

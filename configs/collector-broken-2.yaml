@@ -1,0 +1,105 @@
+# BROKEN: Module 12 Exercise 2B — find and fix the authentication error
+# =============================================================================
+# This config has a deliberate bug: the api-key header in the otlphttp/newrelic
+# exporter is set to a hardcoded placeholder instead of the environment variable.
+#
+# Why it matters:
+#   New Relic rejects all OTLP requests that do not include a valid license key
+#   in the api-key header. The Collector will start successfully, receive data
+#   from the application services, process it — and then fail at the export
+#   step with HTTP 403 Forbidden responses from New Relic's ingest endpoint.
+#
+# Symptom to observe:
+#   - Collector starts and logs no startup errors
+#   - otelcol_receiver_accepted_spans climbs normally (data IS arriving)
+#   - otelcol_exporter_send_failed_spans climbs (data is NOT leaving)
+#   - docker logs otelcol-agent shows: "Exporting failed ... 403 Forbidden"
+#   - No new data appears in New Relic despite the Collector running
+#
+# How to spot the bug:
+#   Inspect the exporters.otlphttp/newrelic.headers section.
+#   The api-key value is a literal string, not an environment variable reference.
+#
+# Fix:
+#   Replace the hardcoded value with the environment variable reference:
+#     api-key: ${env:NR_LICENSE_KEY}
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-self
+          scrape_interval: 10s
+          static_configs:
+            - targets:
+                - localhost:8888
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: lab
+        action: upsert
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      # BUG: hardcoded placeholder instead of ${env:NR_LICENSE_KEY}
+      api-key: INVALID_KEY_REPLACE_ME
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 60s
+
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlphttp/newrelic, debug]
+
+    metrics:
+      receivers: [otlp, prometheus/self]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/newrelic]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlphttp/newrelic]

@@ -1,0 +1,105 @@
+# BROKEN: Module 12 Exercise 2A — find and fix the processor ordering error
+# =============================================================================
+# This config has a deliberate bug: memory_limiter is placed AFTER batch in
+# all three pipelines. This is incorrect.
+#
+# Why it matters:
+#   memory_limiter must always be the FIRST processor. If placed after batch,
+#   the batch processor accumulates data in memory before the limiter can act.
+#   Under a load spike, the batch fills large memory buffers and the limiter
+#   cannot shed load in time — risking OOM crashes and dropped data.
+#
+# Symptom to observe:
+#   - Memory usage (otelcol_process_memory_rss) climbs higher than expected
+#   - Under heavy load, the Collector may restart due to OOM
+#   - The debug exporter shows batches completing before any memory check
+#
+# How to spot the bug:
+#   Look at the processors list in each pipeline. memory_limiter should be
+#   first; here it is second (after batch).
+#
+# Fix:
+#   Move memory_limiter to the first position in every pipeline:
+#     processors: [memory_limiter, batch, resource]
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-self
+          scrape_interval: 10s
+          static_configs:
+            - targets:
+                - localhost:8888
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: lab
+        action: upsert
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 60s
+
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+
+  pipelines:
+    # BUG: memory_limiter is second, after batch. It should be first.
+    traces:
+      receivers: [otlp]
+      processors: [batch, memory_limiter, resource]
+      exporters: [otlphttp/newrelic, debug]
+
+    # BUG: memory_limiter is second, after batch. It should be first.
+    metrics:
+      receivers: [otlp, prometheus/self]
+      processors: [batch, memory_limiter]
+      exporters: [otlphttp/newrelic]
+
+    # BUG: memory_limiter is second, after batch. It should be first.
+    logs:
+      receivers: [otlp]
+      processors: [batch, memory_limiter, resource]
+      exporters: [otlphttp/newrelic]

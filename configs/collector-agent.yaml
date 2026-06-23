@@ -1,0 +1,115 @@
+# =============================================================================
+# collector-agent.yaml — Standard OTel Collector agent config
+# Used in: L101 (M3-M4), L201 (M5-M8)
+# =============================================================================
+# This is the default config mounted into otelcol-agent. It:
+#   - Receives OTLP traces, metrics, and logs from both app services
+#   - Applies memory_limiter (first), batch, and resource enrichment
+#   - Scrapes its own Prometheus self-metrics
+#   - Exports all signals to New Relic via OTLP/HTTP with gzip compression
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Scrape the Collector's own Prometheus metrics endpoint.
+  # These appear in New Relic as Metric data (job=otelcol-self).
+  # Used in Module 8 self-monitoring exercises.
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-self
+          scrape_interval: 10s
+          static_configs:
+            - targets:
+                - localhost:8888
+
+processors:
+  # memory_limiter MUST be first in every pipeline.
+  # It prevents the Collector from exhausting available memory under load spikes.
+  # When the configured limit is reached, it drops new data and logs a warning.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # batch groups telemetry into larger payloads before export.
+  # This reduces the number of HTTP requests to New Relic and improves throughput.
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+  # resource adds or overwrites resource attributes on all telemetry.
+  # deployment.environment is used in New Relic to filter by environment.
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: lab
+        action: upsert
+      - key: collector.tier
+        value: agent
+        action: upsert
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 60s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 100
+
+  # debug exporter writes telemetry summaries to Collector stdout.
+  # Useful for verifying data shape during exercises.
+  # verbosity: normal shows one line per batch; use "detailed" to see all attributes.
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # pprof and zpages are useful for advanced debugging (Module 12).
+  # Uncomment to enable.
+  # pprof:
+  #   endpoint: 0.0.0.0:1777
+  # zpages:
+  #   endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlphttp/newrelic, debug]
+
+    metrics:
+      receivers: [otlp, prometheus/self]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/newrelic]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlphttp/newrelic]

@@ -1,0 +1,145 @@
+# =============================================================================
+# collector-gateway.yaml — Two-tier gateway Collector config
+# Used in: L301 Module 9 (Advanced Collector / two-tier architecture)
+# =============================================================================
+# This config is mounted into otelcol-gateway. In the two-tier architecture:
+#   Agent tier  (otelcol-agent)   — receives from apps, forwards to gateway
+#   Gateway tier (otelcol-gateway) — applies tail sampling, exports to NR
+#
+# For Module 9 exercises, reconfigure otelcol-agent to export to this gateway
+# instead of directly to New Relic:
+#   exporters:
+#     otlp/gateway:
+#       endpoint: http://otelcol-gateway:4320
+#
+# The gateway applies four tail sampling policies (evaluated in order):
+#   1. errors      — keep all traces with error spans
+#   2. slow        — keep traces with any span > 500ms
+#   3. premium     — keep all traces from premium-tier users
+#   4. remainder   — probabilistically sample 5% of everything else
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4320
+
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-gateway-self
+          scrape_interval: 10s
+          static_configs:
+            - targets:
+                - localhost:8888
+
+processors:
+  # memory_limiter is first — required in all pipelines.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 768
+    spike_limit_mib: 192
+
+  # tail_sampling makes sampling decisions after all spans for a trace arrive.
+  # num_traces: the number of in-flight traces the processor holds in memory.
+  # At 10 rps with ~200ms average trace duration, 5000 is a comfortable buffer.
+  # decision_wait: how long to wait for all spans before making a decision.
+  tailsampling:
+    decision_wait: 10s
+    num_traces: 5000
+    expected_new_traces_per_sec: 10
+    policies:
+      # Policy 1: Always keep traces that contain an error span.
+      - name: errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+
+      # Policy 2: Keep traces where any span took longer than 500ms.
+      - name: slow-traces
+        type: latency
+        latency:
+          threshold_ms: 500
+
+      # Policy 3: Keep all traces from premium-tier users.
+      # This relies on the user.tier span attribute set by order-service.
+      - name: premium-tier
+        type: string_attribute
+        string_attribute:
+          key: user.tier
+          values: [premium]
+
+      # Policy 4: Sample 5% of all remaining traces probabilistically.
+      # This is the catch-all — traces not matched by policies 1-3 land here.
+      - name: remainder-sample
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 5
+
+  # resource enriches all telemetry with gateway-specific attributes.
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: lab
+        action: upsert
+      - key: collector.tier
+        value: gateway
+        action: upsert
+
+  # batch runs after tail_sampling (tail_sampling must be before batch).
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 60s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 200
+
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+
+  pipelines:
+    # Traces pipeline — tail sampling requires traces to flow through tailsampling
+    # BEFORE batch. The correct order is:
+    #   memory_limiter → tailsampling → resource → batch → exporter
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tailsampling, resource, batch]
+      exporters: [otlphttp/newrelic, debug]
+
+    metrics:
+      receivers: [otlp, prometheus/self]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/newrelic]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlphttp/newrelic]
