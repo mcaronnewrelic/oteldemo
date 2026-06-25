@@ -1,0 +1,51 @@
+# gateway-min.yaml, gateway state for challenge 02 (start)
+# A bare passthrough gateway: receive from the agent, batch, export to New Relic.
+# No filter, transform, spanmetrics, or tail sampling yet. The learner builds the
+# real pipeline during challenge 02.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 768
+    spike_limit_mib: 192
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+    compression: gzip
+    retry_on_failure: { enabled: true, initial_interval: 5s, max_interval: 30s, max_elapsed_time: 60s }
+    sending_queue: { enabled: true, num_consumers: 4, queue_size: 200 }
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/newrelic]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/newrelic]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/newrelic]

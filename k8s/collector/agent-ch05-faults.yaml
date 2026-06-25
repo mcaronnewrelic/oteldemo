@@ -1,0 +1,94 @@
+# agent-ch05-faults.yaml, capstone agent with an injected fault
+# This is the full agent config EXCEPT the filelog trace_parser operator is
+# missing, so logs are collected but carry no trace_id/span_id. Symptom in New
+# Relic: logs exist for the service but the span Logs tab is empty (no log-trace
+# correlation). The learner restores the trace_parser. (Module 7 fault.)
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-agent-self
+          scrape_interval: 10s
+          static_configs:
+            - targets:
+                - localhost:8888
+  filelog:
+    include: [/var/log/pods/otel-lab_*/*/*.log]
+    exclude: [/var/log/pods/otel-lab_otel-agent-*/*/*.log]
+    start_at: end
+    operators:
+      - type: container
+        id: container-parser
+      - type: json_parser
+        parse_from: body
+        parse_to: attributes
+        if: 'body matches "^\\s*[{]"'
+      - type: severity_parser
+        parse_from: attributes.level
+        if: 'attributes.level != nil'
+      # FAULT: the trace_parser operator that promotes traceId/spanId is missing.
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+    spike_limit_mib: 96
+  k8sattributes:
+    auth_type: serviceAccount
+    passthrough: false
+    extract:
+      metadata: [k8s.namespace.name, k8s.pod.name, k8s.pod.uid, k8s.node.name, k8s.deployment.name]
+    pod_association:
+      - sources: [{ from: resource_attribute, name: k8s.pod.uid }]
+      - sources: [{ from: connection }]
+  resource:
+    attributes:
+      - { key: deployment.environment, value: lab, action: upsert }
+      - { key: collector.tier, value: agent, action: upsert }
+      - { key: service.name, from_attribute: k8s.container.name, action: insert }
+  transform/redact-pii:
+    log_statements:
+      - context: log
+        statements:
+          - replace_pattern(body, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")
+          - delete_key(attributes, "user.email")
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  otlp/gateway:
+    endpoint: otel-gateway.otel-lab.svc.cluster.local:4317
+    tls:
+      insecure: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      # FAULT (Module 6): k8sattributes removed, trace spans are not enriched with pod metadata.
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp/gateway]
+    metrics:
+      receivers: [otlp, prometheus/self]
+      processors: [memory_limiter, k8sattributes, resource, batch]
+      exporters: [otlp/gateway]
+    logs:
+      receivers: [otlp, filelog]
+      processors: [memory_limiter, k8sattributes, resource, transform/redact-pii, batch]
+      exporters: [otlp/gateway]

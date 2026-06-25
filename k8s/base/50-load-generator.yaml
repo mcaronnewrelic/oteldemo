@@ -1,0 +1,43 @@
+# =============================================================================
+# 50-load-generator.yaml, continuous baseline traffic
+# =============================================================================
+# Sends a steady stream of orders so there is always data in New Relic during
+# the lab. Randomizes user_tier and includes a user_email so the Module 7 PII
+# redaction challenge has real emails flowing through the logs.
+# Scale to 0 to pause:  kubectl -n otel-lab scale deploy/load-generator --replicas=0
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: otel-lab
+  labels: { app: load-generator }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: load-generator }
+  template:
+    metadata:
+      labels: { app: load-generator }
+    spec:
+      containers:
+      - name: load-generator
+        image: curlimages/curl:latest
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            RATE="${LOAD_RATE:-5}"
+            SLEEP=$(awk "BEGIN { printf \"%.3f\", 1/${RATE} }")
+            ITEMS="widget gadget component module package"
+            echo "load-generator: ${RATE} rps"
+            while true; do
+              TIER=$( [ $(( $(date +%N) % 2 )) -eq 0 ] && echo premium || echo standard )
+              QTY=$(( ($(date +%N) % 20) + 1 ))
+              ITEM=$(echo $ITEMS | tr ' ' '\n' | sed -n "$(( ($(date +%N) % 5) + 1 ))p")
+              curl -s -o /dev/null -X POST http://order-service.otel-lab.svc.cluster.local:8080/orders \
+                -H "Content-Type: application/json" \
+                -d "{\"item\":\"${ITEM}\",\"quantity\":${QTY},\"user_tier\":\"${TIER}\",\"user_email\":\"${TIER}.user@example.com\"}"
+              sleep "${SLEEP}"
+            done
+        env:
+        - { name: LOAD_RATE, value: "5" }

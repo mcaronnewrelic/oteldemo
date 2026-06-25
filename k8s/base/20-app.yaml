@@ -1,0 +1,114 @@
+# =============================================================================
+# 20-app.yaml, order-service and payment-service (base / solved state)
+# =============================================================================
+# The container images (order-service:lab, payment-service:lab) are built from
+# demo-app/Dockerfile.* and imported into k3s by the track setup script.
+#
+# The repo's demo-app/ directory is bind-mounted from the host (k3s node) into
+# /app/src and the process is run under a file watcher (nodemon for Node,
+# watchmedo for Python). Editing the source in the "App source" tab hot-reloads
+# the service, so the code-edit challenges (01 and the capstone) need no rebuild.
+#
+# OTLP is sent to the node-local otel-agent over gRPC.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: otel-lab
+  labels: { app: order-service }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: order-service }
+  template:
+    metadata:
+      labels: { app: order-service }
+    spec:
+      containers:
+      - name: order-service
+        image: order-service:lab
+        imagePullPolicy: IfNotPresent
+        workingDir: /app
+        command: ["npx", "nodemon", "--legacy-watch", "--watch", "/app/src", "/app/src/order-service.js"]
+        ports:
+        - { containerPort: 8080 }
+        env:
+        - { name: OTEL_SERVICE_NAME, value: order-service }
+        - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-agent.otel-lab.svc.cluster.local:4317" }
+        - { name: OTEL_EXPORTER_OTLP_PROTOCOL, value: grpc }
+        - { name: OTEL_RESOURCE_ATTRIBUTES, value: "deployment.environment=lab,service.version=1.0.0" }
+        - { name: OTEL_NODE_RESOURCE_DETECTORS, value: "env,host,os" }
+        - { name: PORT, value: "8080" }
+        - { name: PAYMENT_SERVICE_URL, value: "http://payment-service.otel-lab.svc.cluster.local:8081" }
+        - { name: LOG_LEVEL, value: INFO }
+        - { name: SIMULATE_ERRORS, value: "false" }
+        volumeMounts:
+        - { name: src, mountPath: /app/src, readOnly: true }
+        readinessProbe:
+          httpGet: { path: /health, port: 8080 }
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: src
+        hostPath: { path: /root/otel-lab/demo-app, type: Directory }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: otel-lab
+spec:
+  selector: { app: order-service }
+  ports:
+  - { name: http, port: 8080, targetPort: 8080 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: otel-lab
+  labels: { app: payment-service }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: payment-service }
+  template:
+    metadata:
+      labels: { app: payment-service }
+    spec:
+      containers:
+      - name: payment-service
+        image: payment-service:lab
+        imagePullPolicy: IfNotPresent
+        workingDir: /app
+        command: ["watchmedo", "auto-restart", "--directory=/app/src", "--pattern=payment-service.py", "--recursive", "--", "python", "/app/src/payment-service.py"]
+        ports:
+        - { containerPort: 8081 }
+        env:
+        - { name: OTEL_SERVICE_NAME, value: payment-service }
+        - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-agent.otel-lab.svc.cluster.local:4317" }
+        - { name: OTEL_EXPORTER_OTLP_PROTOCOL, value: grpc }
+        - { name: OTEL_RESOURCE_ATTRIBUTES, value: "deployment.environment=lab,service.version=1.0.0" }
+        - { name: PORT, value: "8081" }
+        - { name: LOG_LEVEL, value: INFO }
+        - { name: SIMULATE_SLOW, value: "false" }
+        volumeMounts:
+        - { name: src, mountPath: /app/src, readOnly: true }
+        readinessProbe:
+          httpGet: { path: /health, port: 8081 }
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: src
+        hostPath: { path: /root/otel-lab/demo-app, type: Directory }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: otel-lab
+spec:
+  selector: { app: payment-service }
+  ports:
+  - { name: http, port: 8081, targetPort: 8081 }

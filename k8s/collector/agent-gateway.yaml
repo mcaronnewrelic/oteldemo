@@ -1,0 +1,61 @@
+# agent-gateway.yaml, agent state for challenge 03 (start) / challenge 02 (solved)
+# The agent now FORWARDS to the gateway over OTLP (the gateway owns the export to
+# New Relic). Still no log collection, that is added in challenge 03.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+    spike_limit_mib: 96
+  k8sattributes:
+    auth_type: serviceAccount
+    passthrough: false
+    extract:
+      metadata: [k8s.namespace.name, k8s.pod.name, k8s.pod.uid, k8s.node.name, k8s.deployment.name]
+    pod_association:
+      - sources: [{ from: resource_attribute, name: k8s.pod.uid }]
+      - sources: [{ from: connection }]
+  resource:
+    attributes:
+      - { key: deployment.environment, value: lab, action: upsert }
+      - { key: collector.tier, value: agent, action: upsert }
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  otlp/gateway:
+    endpoint: otel-gateway.otel-lab.svc.cluster.local:4317
+    tls:
+      insecure: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resource, batch]
+      exporters: [otlp/gateway]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resource, batch]
+      exporters: [otlp/gateway]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resource, batch]
+      exporters: [otlp/gateway]

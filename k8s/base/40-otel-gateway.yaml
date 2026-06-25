@@ -1,0 +1,55 @@
+# =============================================================================
+# 40-otel-gateway.yaml, otel-gateway Deployment + Service
+# =============================================================================
+# The collector config is NOT embedded here. It is supplied via the
+# `otel-gateway-config` ConfigMap, created from k8s/collector/gateway-*.yaml by
+# the track setup script and apply-state.sh. The gateway mounts it at /etc/otelcol.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-gateway
+  namespace: otel-lab
+  labels: { app: otel-gateway }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: otel-gateway }
+  template:
+    metadata:
+      labels: { app: otel-gateway }
+    spec:
+      containers:
+      - name: otel-gateway
+        image: otel/opentelemetry-collector-contrib:0.100.0
+        args: ["--config=/etc/otelcol/config.yaml"]
+        env:
+        - name: NR_LICENSE_KEY
+          valueFrom:
+            secretKeyRef: { name: newrelic, key: license-key }
+        - name: NR_OTLP_ENDPOINT
+          valueFrom:
+            secretKeyRef: { name: newrelic, key: otlp-endpoint }
+        ports:
+        - { name: otlp-grpc, containerPort: 4317 }
+        - { name: metrics, containerPort: 8888 }
+        - { name: health, containerPort: 13133 }
+        volumeMounts:
+        - { name: config, mountPath: /etc/otelcol }
+        livenessProbe:
+          httpGet: { path: /, port: 13133 }
+          initialDelaySeconds: 10
+      volumes:
+      - name: config
+        configMap: { name: otel-gateway-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-gateway
+  namespace: otel-lab
+spec:
+  selector: { app: otel-gateway }
+  ports:
+  - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+  - { name: metrics, port: 8888, targetPort: 8888 }

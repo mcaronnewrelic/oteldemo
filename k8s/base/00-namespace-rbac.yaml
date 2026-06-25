@@ -1,0 +1,44 @@
+# =============================================================================
+# 00-namespace-rbac.yaml, namespace + RBAC for the OTel 201 lab
+# =============================================================================
+# The otel-agent DaemonSet uses the k8sattributes processor, which queries the
+# Kubernetes API for pod/namespace metadata. That requires a ServiceAccount with
+# read access to pods, namespaces, and replicasets.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-lab
+  labels:
+    app.kubernetes.io/part-of: otel-201-lab
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-agent
+  namespace: otel-lab
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-agent
+rules:
+- apiGroups: [""]
+  resources: ["pods", "namespaces", "nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["replicasets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-agent
+subjects:
+- kind: ServiceAccount
+  name: otel-agent
+  namespace: otel-lab

@@ -1,0 +1,65 @@
+# agent-direct.yaml, agent state for challenges 01 and 02 (start)
+# The agent exports STRAIGHT to New Relic (no gateway yet). No log collection.
+# This is the simple single-tier setup the learner starts from before building
+# the agent + gateway topology in challenge 02.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+    spike_limit_mib: 96
+  k8sattributes:
+    auth_type: serviceAccount
+    passthrough: false
+    extract:
+      metadata: [k8s.namespace.name, k8s.pod.name, k8s.pod.uid, k8s.node.name, k8s.deployment.name]
+    pod_association:
+      - sources: [{ from: resource_attribute, name: k8s.pod.uid }]
+      - sources: [{ from: connection }]
+  resource:
+    attributes:
+      - { key: deployment.environment, value: lab, action: upsert }
+      - { key: collector.tier, value: agent, action: upsert }
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+    compression: gzip
+    retry_on_failure: { enabled: true, initial_interval: 5s, max_interval: 30s, max_elapsed_time: 60s }
+    sending_queue: { enabled: true, num_consumers: 4, queue_size: 100 }
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resource, batch]
+      exporters: [otlphttp/newrelic]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resource, batch]
+      exporters: [otlphttp/newrelic]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resource, batch]
+      exporters: [otlphttp/newrelic]

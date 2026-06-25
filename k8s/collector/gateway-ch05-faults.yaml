@@ -1,0 +1,95 @@
+# gateway-ch05-faults.yaml, capstone gateway with two injected faults
+# Fault A (Module 8, cost): tail_sampling is REMOVED, so 100% of traces are
+#   exported, ingest volume spikes.
+# Fault B (Module 8, data quality): the spanmetrics connector adds order.id as a
+#   dimension. order.id is unique per request, so metric cardinality explodes.
+# The learner restores tail_sampling and removes the high-cardinality dimension.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-gateway-self
+          scrape_interval: 10s
+          static_configs:
+            - targets:
+                - localhost:8888
+
+connectors:
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s]
+    dimensions:
+      - { name: service.name }
+      - { name: span.kind }
+      - { name: http.route }
+      # FAULT B: order.id is unique per request, this explodes metric cardinality.
+      - { name: order.id }
+    metrics_flush_interval: 15s
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 768
+    spike_limit_mib: 192
+  filter/health:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["url.path"] == "/health"'
+        - 'attributes["http.route"] == "/health"'
+        - 'name == "GET /health"'
+  transform/spans:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - set(attributes["user.tier"], "standard") where attributes["user.tier"] == nil
+  resource:
+    attributes:
+      - { key: deployment.environment, value: lab, action: upsert }
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+    compression: gzip
+    retry_on_failure: { enabled: true, initial_interval: 5s, max_interval: 30s, max_elapsed_time: 60s }
+    sending_queue: { enabled: true, num_consumers: 4, queue_size: 200 }
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+  pipelines:
+    # FAULT A: no tailsampling processor, every trace is exported.
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/health, transform/spans, resource, batch]
+      exporters: [otlphttp/newrelic]
+    traces/spanmetrics:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/health]
+      exporters: [spanmetrics]
+    metrics:
+      receivers: [otlp, prometheus/self, spanmetrics]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp/newrelic]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp/newrelic]
