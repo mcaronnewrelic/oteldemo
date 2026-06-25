@@ -17,6 +17,7 @@
     "@opentelemetry/exporter-metrics-otlp-grpc": "^0.51.1",
     "@opentelemetry/api": "^1.8.0",
     "@opentelemetry/sdk-metrics": "^1.24.1",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "nodemon": "^3.1.4"
   }
 }

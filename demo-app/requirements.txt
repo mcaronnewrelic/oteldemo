@@ -15,3 +15,7 @@ opentelemetry-instrumentation-flask>=0.45b0
 
 # Auto-instrumentation for outbound HTTP requests via the requests library
 opentelemetry-instrumentation-requests>=0.45b0
+
+# File watcher used by the Kubernetes lab to hot-reload payment-service.py on
+# edit (watchmedo auto-restart). Not used by the docker-compose CMD.
+watchdog>=4.0.0

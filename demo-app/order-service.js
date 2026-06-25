@@ -147,13 +147,17 @@ function callPaymentService(orderId, amount, currency) {
 //   order.item      — item name from request body
 //   order.quantity  — quantity from request body
 //   user.tier       — "standard" or "premium" from request body
+//
+// Note: the customer email is deliberately written to the structured logs (not
+// to the span) so the Level 201 Module 7 challenge has a real PII field to redact
+// at the Collector. It is never attached as a span attribute.
 // =============================================================================
 app.post('/orders', async (req, res) => {
   const tracer = trace.getTracer('order-service', '1.0.0');
 
   await tracer.startActiveSpan('process-order', async (span) => {
     try {
-      const { item, quantity, user_tier: userTier = 'standard' } = req.body;
+      const { item, quantity, user_tier: userTier = 'standard', user_email: userEmail } = req.body;
 
       // Input validation — returns 400 with a span error status.
       if (!item || quantity === undefined || quantity === null) {
@@ -186,6 +190,10 @@ app.post('/orders', async (req, res) => {
       const amount = parseFloat((quantity * (Math.random() * 90 + 10)).toFixed(2));
       const currency = 'USD';
 
+      // Customer email is PII. It is intentionally carried into the logs only
+      // (never the span) so Module 7 can demonstrate redacting it at the Collector.
+      const customerEmail = userEmail || `customer+${orderId.slice(0, 8)}@example.com`;
+
       // Attach custom business attributes to the span.
       span.setAttributes({
         'order.id': orderId,
@@ -196,7 +204,7 @@ app.post('/orders', async (req, res) => {
         'order.currency': currency,
       });
 
-      log('INFO', 'Processing order', { orderId, item, quantity, userTier, amount });
+      log('INFO', 'Processing order', { orderId, item, quantity, userTier, amount, 'user.email': customerEmail });
 
       // Call payment-service. Distributed tracing propagates automatically via
       // the auto-instrumentation HTTP instrumentation (W3C TraceContext headers).
@@ -226,6 +234,7 @@ app.post('/orders', async (req, res) => {
         paymentId: paymentResult.payment_id,
         amount,
         userTier,
+        'user.email': customerEmail,
       });
 
       span.end();
