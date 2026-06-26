@@ -64,8 +64,10 @@ _metric_reader = PeriodicExportingMetricReader(
 _meter_provider = MeterProvider(resource=_resource, metric_readers=[_metric_reader])
 metrics.set_meter_provider(_meter_provider)
 
-# Auto-instrument Flask and requests (if used for outbound calls)
-FlaskInstrumentor().instrument()
+# Auto-instrument requests globally. Flask is instrumented per-app below, after
+# the app object exists (instrument_app is the reliable form; the global
+# instrument() did not create server spans here, so incoming trace context was
+# never extracted and traces fragmented at this service).
 RequestsInstrumentor().instrument()
 
 # Tracer and Meter handles used throughout this module
@@ -132,6 +134,7 @@ def log(level: str, message: str, **extra):
 # =============================================================================
 
 app = Flask(__name__)
+FlaskInstrumentor().instrument_app(app)
 
 SIMULATE_SLOW = os.environ.get("SIMULATE_SLOW", "false").lower() == "true"
 PORT = int(os.environ.get("PORT", "8081"))
