@@ -67,6 +67,7 @@ processors:
 
   resource:
     attributes:
+      - { key: lab.run.id, value: "${env:LAB_RUN_ID}", action: upsert }
       - { key: deployment.environment, value: lab, action: upsert }
       - { key: collector.tier, value: agent, action: upsert }
       - { key: service.name, from_attribute: k8s.container.name, action: insert }

@@ -37,6 +37,9 @@ spec:
         - name: NR_OTLP_ENDPOINT
           valueFrom:
             secretKeyRef: { name: newrelic, key: otlp-endpoint }
+        - name: LAB_RUN_ID
+          valueFrom:
+            configMapKeyRef: { name: lab-run, key: id }
         ports:
         - { name: otlp-grpc, containerPort: 4317 }
         - { name: otlp-http, containerPort: 4318 }

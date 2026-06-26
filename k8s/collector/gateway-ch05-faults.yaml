@@ -51,6 +51,7 @@ processors:
           - set(attributes["user.tier"], "standard") where attributes["user.tier"] == nil
   resource:
     attributes:
+      - { key: lab.run.id, value: "${env:LAB_RUN_ID}", action: upsert }
       - { key: deployment.environment, value: lab, action: upsert }
   batch:
     send_batch_size: 1000

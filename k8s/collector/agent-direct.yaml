@@ -25,6 +25,7 @@ processors:
       - sources: [{ from: connection }]
   resource:
     attributes:
+      - { key: lab.run.id, value: "${env:LAB_RUN_ID}", action: upsert }
       - { key: deployment.environment, value: lab, action: upsert }
       - { key: collector.tier, value: agent, action: upsert }
   batch:
