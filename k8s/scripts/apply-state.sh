@@ -63,5 +63,9 @@ case "${STATE}" in
 esac
 
 restart deployment/order-service deployment/payment-service deployment/otel-gateway daemonset/otel-agent
-kubectl -n "${NS}" rollout status deployment/order-service --timeout=120s >/dev/null 2>&1 || true
+# Wait for every workload to finish rolling out so the new config/code is actually
+# live before the solve wait and the (short) absence-check windows in the checks.
+for w in deployment/order-service deployment/payment-service deployment/otel-gateway daemonset/otel-agent; do
+  kubectl -n "${NS}" rollout status "$w" --timeout=120s >/dev/null 2>&1 || true
+done
 echo "==> State ${STATE} applied."
