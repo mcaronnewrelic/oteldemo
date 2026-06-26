@@ -22,9 +22,19 @@ receivers:
     include: [/var/log/pods/otel-lab_*/*/*.log]
     exclude: [/var/log/pods/otel-lab_otel-agent-*/*/*.log]
     start_at: end
+    include_file_path: true
     operators:
-      - type: container
-        id: container-parser
+      - type: regex_parser
+        id: cri
+        regex: '^(?P<time>[^\s]+) (?P<stream>stdout|stderr) (?P<logtag>[FP]) ?(?P<log>.*)$'
+      - type: regex_parser
+        id: path-meta
+        parse_from: attributes["log.file.path"]
+        regex: '^/var/log/pods/(?P<namespace>[^_]+)_(?P<pod>[^_]+)_(?P<uid>[^/]+)/(?P<container>[^/]+)/'
+        parse_to: resource
+      - type: move
+        from: attributes.log
+        to: body
       - type: json_parser
         parse_from: body
         parse_to: attributes
@@ -52,7 +62,7 @@ processors:
       - { key: lab.run.id, value: "${env:LAB_RUN_ID}", action: upsert }
       - { key: deployment.environment, value: lab, action: upsert }
       - { key: collector.tier, value: agent, action: upsert }
-      - { key: service.name, from_attribute: k8s.container.name, action: insert }
+      - { key: service.name, from_attribute: container, action: insert }
   transform/redact-pii:
     log_statements:
       - context: log
