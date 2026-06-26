@@ -4,10 +4,10 @@
 # The container images (order-service:lab, payment-service:lab) are built from
 # demo-app/Dockerfile.* and imported into k3s by the track setup script.
 #
-# The repo's demo-app/ directory is bind-mounted from the host (k3s node) into
-# /app/src and the process is run under a file watcher (nodemon for Node,
-# watchmedo for Python). Editing the source in the "App source" tab hot-reloads
-# the service, so the code-edit challenges (01 and the capstone) need no rebuild.
+# order-service's source is bind-mounted from the host (k3s node) into /app/src
+# and run under nodemon, so editing it in the "App source" tab hot-reloads it,
+# the code-edit challenges (01 and the capstone) need no rebuild. payment-service
+# is never edited by a challenge, so it runs plain python (no watcher needed).
 #
 # OTLP is sent to the node-local otel-agent over gRPC.
 # =============================================================================
@@ -82,7 +82,7 @@ spec:
         image: payment-service:lab
         imagePullPolicy: IfNotPresent
         workingDir: /app
-        command: ["watchmedo", "auto-restart", "--directory=/app/src", "--pattern=payment-service.py", "--recursive", "--", "python", "/app/src/payment-service.py"]
+        command: ["python", "/app/src/payment-service.py"]
         ports:
         - { containerPort: 8081 }
         env:

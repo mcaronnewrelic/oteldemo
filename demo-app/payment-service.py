@@ -36,7 +36,7 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
-from opentelemetry.trace import SpanStatusCode
+from opentelemetry.trace import Status, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 # =============================================================================
@@ -194,7 +194,7 @@ def process_payment():
             "payment.amount": amount,
         })
 
-        span.set_status(SpanStatusCode.OK)
+        span.set_status(Status(StatusCode.OK))
 
         # Increment counter and record histogram value.
         # Attributes here become dimensions in New Relic metric facets.
