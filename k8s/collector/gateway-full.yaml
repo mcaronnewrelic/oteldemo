@@ -48,7 +48,7 @@ processors:
         statements:
           - set(attributes["user.tier"], "standard") where attributes["user.tier"] == nil
 
-  tailsampling:
+  tail_sampling:
     decision_wait: 10s
     num_traces: 5000
     expected_new_traces_per_sec: 10
@@ -100,7 +100,7 @@ service:
     # Export path: filter, normalize, tail-sample, then export.
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, filter/health, transform/spans, tailsampling, resource, batch]
+      processors: [memory_limiter, filter/health, transform/spans, tail_sampling, resource, batch]
       exporters: [otlphttp/newrelic, debug]
     # Metric-generation path: sees ALL spans (pre-sampling) for accurate RED.
     traces/spanmetrics:
