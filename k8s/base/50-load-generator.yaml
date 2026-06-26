@@ -26,18 +26,13 @@ spec:
         command: ["/bin/sh", "-c"]
         args:
           - |
-            RATE="${LOAD_RATE:-5}"
-            SLEEP=$(awk "BEGIN { printf \"%.3f\", 1/${RATE} }")
-            ITEMS="widget gadget component module package"
-            echo "load-generator: ${RATE} rps"
+            i=0
+            echo "load-generator: ~1 rps, alternating tiers"
             while true; do
-              TIER=$( [ $(( $(date +%N) % 2 )) -eq 0 ] && echo premium || echo standard )
-              QTY=$(( ($(date +%N) % 20) + 1 ))
-              ITEM=$(echo $ITEMS | tr ' ' '\n' | sed -n "$(( ($(date +%N) % 5) + 1 ))p")
+              if [ $((i % 2)) -eq 0 ]; then TIER=premium; else TIER=standard; fi
               curl -s -o /dev/null -X POST http://order-service.otel-lab.svc.cluster.local:8080/orders \
                 -H "Content-Type: application/json" \
-                -d "{\"item\":\"${ITEM}\",\"quantity\":${QTY},\"user_tier\":\"${TIER}\",\"user_email\":\"${TIER}.user@example.com\"}"
-              sleep "${SLEEP}"
+                -d "{\"item\":\"widget\",\"quantity\":3,\"user_tier\":\"${TIER}\",\"user_email\":\"${TIER}@example.com\"}"
+              i=$((i + 1))
+              sleep 1
             done
-        env:
-        - { name: LOAD_RATE, value: "5" }
