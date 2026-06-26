@@ -13,7 +13,11 @@ metadata:
   namespace: otel-lab
   labels: { app: load-generator }
 spec:
-  replicas: 1
+  # Several replicas keep a healthy span rate flowing. The gateway's tail
+  # sampling (solved state) only exports a fraction of traces, and New Relic
+  # keys spans on their start time, so a low rate leaves the short check windows
+  # without enough fully-ingested sampled traces. A higher baseline avoids that.
+  replicas: 4
   selector:
     matchLabels: { app: load-generator }
   template:
@@ -27,12 +31,12 @@ spec:
         args:
           - |
             i=0
-            echo "load-generator: ~1 rps, alternating tiers"
+            echo "load-generator: ~2 rps/replica, alternating tiers"
             while true; do
               if [ $((i % 2)) -eq 0 ]; then TIER=premium; else TIER=standard; fi
               curl -s -o /dev/null -X POST http://order-service.otel-lab.svc.cluster.local:8080/orders \
                 -H "Content-Type: application/json" \
                 -d "{\"item\":\"widget\",\"quantity\":3,\"user_tier\":\"${TIER}\",\"user_email\":\"${TIER}@example.com\"}"
               i=$((i + 1))
-              sleep 1
+              sleep 0.5
             done
