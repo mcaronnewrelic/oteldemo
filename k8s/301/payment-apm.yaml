@@ -1,0 +1,53 @@
+# =============================================================================
+# payment-apm.yaml, 301 migration challenge, START state (APM-agent only).
+# =============================================================================
+# Redefines ONLY the payment-service Deployment so it runs under the New Relic
+# Python APM agent (newrelic-admin run-program) executing payment-service.apm.py,
+# which has NO OpenTelemetry SDK. In this state payment-service reports to New
+# Relic APM but emits NO OTLP spans, so it carries no lab.run.id and the
+# order to payment distributed trace is incomplete in OpenTelemetry.
+# Applied by apply-state-301.sh (chb-start). The Service is unchanged (base).
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: otel-lab
+  labels: { app: payment-service }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: payment-service }
+  template:
+    metadata:
+      labels: { app: payment-service }
+    spec:
+      containers:
+      - name: payment-service
+        image: payment-service:lab
+        imagePullPolicy: IfNotPresent
+        workingDir: /app
+        # Launch under the New Relic APM agent (not OTel).
+        command: ["newrelic-admin", "run-program", "python", "/app/src/payment-service.apm.py"]
+        ports:
+        - { containerPort: 8081 }
+        env:
+        - { name: NEW_RELIC_APP_NAME, value: payment-service }
+        - name: NEW_RELIC_LICENSE_KEY
+          valueFrom:
+            secretKeyRef: { name: newrelic, key: license-key }
+        - { name: NEW_RELIC_DISTRIBUTED_TRACING_ENABLED, value: "true" }
+        - { name: NEW_RELIC_LOG, value: stdout }
+        - { name: NEW_RELIC_LOG_LEVEL, value: info }
+        - { name: PORT, value: "8081" }
+        - { name: LOG_LEVEL, value: INFO }
+        - { name: SIMULATE_SLOW, value: "false" }
+        volumeMounts:
+        - { name: src, mountPath: /app/src, readOnly: true }
+        readinessProbe:
+          httpGet: { path: /health, port: 8081 }
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: src
+        hostPath: { path: /root/otel-lab/demo-app, type: Directory }

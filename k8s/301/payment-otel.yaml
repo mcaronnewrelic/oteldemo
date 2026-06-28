@@ -1,0 +1,49 @@
+# =============================================================================
+# payment-otel.yaml, 301 migration challenge, SOLVED state (migrated to OTel).
+# =============================================================================
+# Reverts the payment-service Deployment to the canonical OpenTelemetry build:
+# plain `python payment-service.py` with the OTLP exporter env. payment-service
+# now emits OTel spans (tagged with lab.run.id by the agent/gateway resource
+# processor), so the order to payment distributed trace is complete again.
+# This matches the payment-service Deployment in base/20-app.yaml.
+# Applied by apply-state-301.sh (chb-solved). The Service is unchanged (base).
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: otel-lab
+  labels: { app: payment-service }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: payment-service }
+  template:
+    metadata:
+      labels: { app: payment-service }
+    spec:
+      containers:
+      - name: payment-service
+        image: payment-service:lab
+        imagePullPolicy: IfNotPresent
+        workingDir: /app
+        command: ["python", "/app/src/payment-service.py"]
+        ports:
+        - { containerPort: 8081 }
+        env:
+        - { name: OTEL_SERVICE_NAME, value: payment-service }
+        - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-agent.otel-lab.svc.cluster.local:4317" }
+        - { name: OTEL_EXPORTER_OTLP_PROTOCOL, value: grpc }
+        - { name: OTEL_RESOURCE_ATTRIBUTES, value: "deployment.environment=lab,service.version=1.0.0" }
+        - { name: PORT, value: "8081" }
+        - { name: LOG_LEVEL, value: INFO }
+        - { name: SIMULATE_SLOW, value: "false" }
+        volumeMounts:
+        - { name: src, mountPath: /app/src, readOnly: true }
+        readinessProbe:
+          httpGet: { path: /health, port: 8081 }
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: src
+        hostPath: { path: /root/otel-lab/demo-app, type: Directory }

@@ -1,0 +1,84 @@
+# =============================================================================
+# gateway-sts.yaml, otel-gateway as a StatefulSet (301 lab only)
+# =============================================================================
+# The 301 "tail sampling at scale" challenge needs MULTIPLE gateway replicas.
+# Tail sampling is stateful: a replica must see ALL spans of a trace to make a
+# correct keep/drop decision. So the gateway runs as a StatefulSet (stable
+# identities) fronted by a HEADLESS Service (otel-gateway-hl), which the agent's
+# loadbalancing exporter resolves via DNS to route each trace, by trace ID, to
+# exactly one replica. A second normal Service (otel-gateway) carries metrics and
+# the non-trace pipelines.
+#
+# This file is used ONLY by the 301 track (applied by its setup + apply-state-301.sh).
+# It does NOT replace the 201 base/40-otel-gateway.yaml Deployment.
+# The collector config is supplied via the otel-gateway-config ConfigMap.
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: otel-gateway
+  namespace: otel-lab
+  labels: { app: otel-gateway }
+spec:
+  serviceName: otel-gateway-hl
+  replicas: 3
+  selector:
+    matchLabels: { app: otel-gateway }
+  template:
+    metadata:
+      labels: { app: otel-gateway }
+    spec:
+      containers:
+      - name: otel-gateway
+        image: otel/opentelemetry-collector-contrib:0.100.0
+        args: ["--config=/etc/otelcol/config.yaml"]
+        env:
+        - name: NR_LICENSE_KEY
+          valueFrom:
+            secretKeyRef: { name: newrelic, key: license-key }
+        - name: NR_OTLP_ENDPOINT
+          valueFrom:
+            secretKeyRef: { name: newrelic, key: otlp-endpoint }
+        - name: LAB_RUN_ID
+          valueFrom:
+            configMapKeyRef: { name: lab-run, key: id }
+        ports:
+        - { name: otlp-grpc, containerPort: 4317 }
+        - { name: metrics, containerPort: 8888 }
+        - { name: health, containerPort: 13133 }
+        volumeMounts:
+        - { name: config, mountPath: /etc/otelcol }
+        livenessProbe:
+          httpGet: { path: /, port: 13133 }
+          initialDelaySeconds: 10
+      volumes:
+      - name: config
+        configMap: { name: otel-gateway-config }
+---
+# Headless service: DNS returns one A record per ready replica IP. The agent's
+# loadbalancing exporter uses this to discover the gateway pods and route by trace.
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-gateway-hl
+  namespace: otel-lab
+  labels: { app: otel-gateway }
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: false
+  selector: { app: otel-gateway }
+  ports:
+  - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+---
+# Normal service: used for metrics scraping and for the non-trace pipelines
+# (metrics/logs), where per-trace affinity does not matter.
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-gateway
+  namespace: otel-lab
+spec:
+  selector: { app: otel-gateway }
+  ports:
+  - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+  - { name: metrics, port: 8888, targetPort: 8888 }

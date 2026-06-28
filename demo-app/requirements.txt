@@ -23,3 +23,9 @@ watchdog>=4.0.0
 # The OTel requests instrumentation imports the requests library at load time,
 # so it must be installed even though payment-service makes no outbound calls.
 requests>=2.31.0
+
+# New Relic Python APM agent. Used ONLY by the 301 migration challenge, where
+# payment-service.apm.py runs under `newrelic-admin run-program` instead of OTel.
+# Installing it here is inert for the 101/201 labs (it is never imported unless
+# the service is launched via the agent), so it does not affect those labs.
+newrelic>=9.0.0
