@@ -1,0 +1,114 @@
+# gateway-301.yaml, 301 tail-sampling-at-scale gateway config. Same as gateway-full.yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-gateway-self
+          scrape_interval: 10s
+          static_configs:
+            - targets:
+                - localhost:8888
+
+connectors:
+  # Generate RED metrics (calls count + duration histogram) from spans.
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s]
+    dimensions:
+      # service.name, span.name, span.kind, and status.code are DEFAULT dimensions
+      # already; only add non-default ones here (listing defaults is a config error).
+      - { name: http.route }
+    metrics_flush_interval: 15s
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 768
+    spike_limit_mib: 192
+
+  # Drop health-check spans before they are exported or counted.
+  filter/health:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["url.path"] == "/health"'
+        - 'attributes["http.route"] == "/health"'
+        - 'name == "GET /health"'
+
+  # Normalize: default a missing user.tier so dashboards never show null.
+  transform/spans:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - set(attributes["user.tier"], "standard") where attributes["user.tier"] == nil
+
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 5000
+    expected_new_traces_per_sec: 10
+    policies:
+      - name: errors
+        type: status_code
+        status_code: { status_codes: [ERROR] }
+      - name: slow-traces
+        type: latency
+        latency: { threshold_ms: 500 }
+      - name: premium-tier
+        type: string_attribute
+        string_attribute: { key: user.tier, values: [premium] }
+
+  resource:
+    attributes:
+      - { key: lab.run.id, value: "${env:LAB_RUN_ID}", action: upsert }
+      - { key: deployment.environment, value: lab, action: upsert }
+
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+    compression: gzip
+    retry_on_failure: { enabled: true, initial_interval: 5s, max_interval: 30s, max_elapsed_time: 60s }
+    sending_queue: { enabled: true, num_consumers: 4, queue_size: 200 }
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+  pipelines:
+    # Export path: filter, normalize, tail-sample, then export.
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/health, transform/spans, tail_sampling, resource, batch]
+      exporters: [otlphttp/newrelic, debug]
+    # Metric-generation path: sees ALL spans (pre-sampling) for accurate RED.
+    traces/spanmetrics:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/health]
+      exporters: [spanmetrics]
+    metrics:
+      receivers: [otlp, prometheus/self, spanmetrics]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp/newrelic]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp/newrelic]
