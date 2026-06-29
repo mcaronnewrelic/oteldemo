@@ -44,7 +44,7 @@ restart() { for w in "$@"; do kubectl -n "${NS}" rollout restart "$w" >/dev/null
 
 echo "==> Applying 301 lab state: ${STATE}"
 case "${STATE}" in
-  cha-start)  load_gateway gateway-full.yaml; load_agent agent-lb-byservice.yaml; set_payment otel ;;
+  cha-start)  load_gateway gateway-full.yaml; load_agent agent-split.yaml;        set_payment otel ;;
   cha-solved) load_gateway gateway-full.yaml; load_agent agent-lb-bytrace.yaml;   set_payment otel ;;
   chb-start)  load_gateway gateway-full.yaml; load_agent agent-lb-bytrace.yaml;   set_payment apm  ;;
   chb-solved) load_gateway gateway-full.yaml; load_agent agent-lb-bytrace.yaml;   set_payment otel ;;

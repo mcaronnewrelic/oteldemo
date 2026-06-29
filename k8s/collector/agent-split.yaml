@@ -1,0 +1,103 @@
+# agent-split.yaml, 301 tail-sampling-at-scale, BROKEN state (deterministic).
+# This agent explicitly routes traces to specific gateway replicas BY SERVICE:
+# order-service spans go to otel-gateway-0 and payment-service spans go to
+# otel-gateway-1, using two filtered traces pipelines. The effect is that EVERY
+# two-service trace is split across two replicas, so each replica's tail sampling
+# only ever sees half of a trace and makes its keep/drop decision on a partial
+# view. Sampled traces therefore arrive incomplete.
+#
+# This is a deliberately wrong way to scale tail sampling. The fix is to route by
+# trace ID instead (see agent-lb-bytrace.yaml), so every span of a trace lands on
+# one replica that can see the whole trace.
+#
+# Determinism note: the per-service filter split guarantees the two services
+# never share a replica, unlike a hash-based routing_key: service, which can
+# co-locate them by chance.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+    spike_limit_mib: 96
+  k8sattributes:
+    auth_type: serviceAccount
+    passthrough: false
+    extract:
+      metadata: [k8s.namespace.name, k8s.pod.name, k8s.pod.uid, k8s.node.name, k8s.deployment.name]
+    pod_association:
+      - sources: [{ from: resource_attribute, name: k8s.pod.uid }]
+      - sources: [{ from: connection }]
+  resource:
+    attributes:
+      - { key: lab.run.id, value: "${env:LAB_RUN_ID}", action: upsert }
+      - { key: deployment.environment, value: lab, action: upsert }
+      - { key: collector.tier, value: agent, action: upsert }
+  # Keep only NON-payment spans (drops payment-service): feeds the gw-0 pipeline.
+  filter/not-payment:
+    error_mode: ignore
+    traces:
+      span:
+        - 'resource.attributes["service.name"] == "payment-service"'
+  # Keep only payment spans (drops everything else): feeds the gw-1 pipeline.
+  filter/only-payment:
+    error_mode: ignore
+    traces:
+      span:
+        - 'resource.attributes["service.name"] != "payment-service"'
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  # Stable per-pod DNS from the headless service: each trace's two services land
+  # on two DIFFERENT replicas, splitting the trace.
+  otlp/gw0:
+    endpoint: otel-gateway-0.otel-gateway-hl.otel-lab.svc.cluster.local:4317
+    tls:
+      insecure: true
+  otlp/gw1:
+    endpoint: otel-gateway-1.otel-gateway-hl.otel-lab.svc.cluster.local:4317
+    tls:
+      insecure: true
+  # Non-trace signals go to the normal gateway Service.
+  otlp/gateway:
+    endpoint: otel-gateway.otel-lab.svc.cluster.local:4317
+    tls:
+      insecure: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+  pipelines:
+    # order-service (and anything not payment) -> gateway-0
+    traces/gw0:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resource, filter/not-payment, batch]
+      exporters: [otlp/gw0]
+    # payment-service -> gateway-1
+    traces/gw1:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resource, filter/only-payment, batch]
+      exporters: [otlp/gw1]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resource, batch]
+      exporters: [otlp/gateway]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resource, batch]
+      exporters: [otlp/gateway]
