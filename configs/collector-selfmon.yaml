@@ -1,0 +1,113 @@
+# =============================================================================
+# collector-selfmon.yaml — Module 8 (Health & Cost) self-monitoring config
+# =============================================================================
+# Same data path as collector-agent.yaml, but tuned to surface the Collector's
+# OWN health and throughput so students can build a self-monitoring dashboard
+# and estimate ingest cost:
+#   - prometheus/self scrapes the Collector's internal metrics every 5s
+#     (faster than the default 10s so dashboards update quickly)
+#   - service.telemetry.metrics.level = detailed exposes per-pipeline counters
+#     (accepted/refused/sent/dropped for spans, metric points, and log records)
+#   - the otelcol_* metrics arrive in New Relic with job=otelcol-self
+#
+# Key metrics to chart in Module 8:
+#   otelcol_receiver_accepted_spans / _refused_spans
+#   otelcol_exporter_sent_spans / _send_failed_spans
+#   otelcol_processor_batch_batch_send_size
+#   otelcol_process_memory_rss / otelcol_process_cpu_seconds
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Scrape the Collector's own Prometheus metrics endpoint every 5s.
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-self
+          scrape_interval: 5s
+          static_configs:
+            - targets:
+                - localhost:8888
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: lab
+        action: upsert
+      - key: collector.tier
+        value: agent
+        action: upsert
+
+  # PII redaction on logs (kept consistent with collector-agent.yaml).
+  transform/redact-pii:
+    log_statements:
+      - context: log
+        statements:
+          - replace_pattern(body, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")
+          - delete_key(attributes, "user.email")
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 60s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 100
+
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  telemetry:
+    logs:
+      level: info
+    # detailed exposes the full set of per-pipeline self-metrics used in Module 8.
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlphttp/newrelic, debug]
+
+    metrics:
+      receivers: [otlp, prometheus/self]
+      processors: [memory_limiter, batch, resource]
+      exporters: [otlphttp/newrelic]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, transform/redact-pii, batch]
+      exporters: [otlphttp/newrelic]

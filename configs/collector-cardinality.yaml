@@ -1,0 +1,124 @@
+# =============================================================================
+# collector-cardinality.yaml — Module 11 (Cardinality Control) config
+# =============================================================================
+# Demonstrates trimming high-cardinality attributes at the Collector BEFORE
+# export, so they don't explode metric/attribute cardinality (and cost) in
+# New Relic.
+#
+# order-service and payment-service attach several unbounded attributes:
+#   order.id, payment.order_id, payment.id  — unique per request (unbounded)
+#   order.amount, payment.amount            — near-unique floats
+# Faceting or aggregating on these creates one time series per value. This
+# config drops them from spans with a `transform` processor.
+#
+# Module 11 exercise:
+#   1. First run collector-agent.yaml and audit cardinality in New Relic:
+#        SELECT cardinality(order.id), cardinality(order.amount) FROM Span
+#        WHERE service.name = 'order-service' SINCE 30 minutes ago
+#   2. Switch to this config and confirm those attributes are gone from new
+#      spans, while low-cardinality dimensions (user.tier, payment.gateway,
+#      order.item) are preserved for faceting.
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  prometheus/self:
+    config:
+      scrape_configs:
+        - job_name: otelcol-self
+          scrape_interval: 10s
+          static_configs:
+            - targets:
+                - localhost:8888
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Drop high-cardinality attributes from spans before export. Keep the
+  # low-cardinality business dimensions (user.tier, order.item, payment.gateway,
+  # payment.currency) that are useful for faceting.
+  transform/cardinality:
+    trace_statements:
+      - context: span
+        statements:
+          - delete_key(attributes, "order.id")
+          - delete_key(attributes, "order.amount")
+          - delete_key(attributes, "order.currency")
+          - delete_key(attributes, "payment.order_id")
+          - delete_key(attributes, "payment.amount")
+      # order-service and payment-service also attach unbounded ids/amounts to
+      # span events (order.completed, payment.authorized) — trim those too.
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "order.id")
+          - delete_key(attributes, "order.amount")
+          - delete_key(attributes, "payment.id")
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: lab
+        action: upsert
+      - key: collector.tier
+        value: agent
+        action: upsert
+
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 60s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 100
+
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  telemetry:
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/cardinality, resource, batch]
+      exporters: [otlphttp/newrelic, debug]
+
+    metrics:
+      receivers: [otlp, prometheus/self]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/newrelic]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp/newrelic]

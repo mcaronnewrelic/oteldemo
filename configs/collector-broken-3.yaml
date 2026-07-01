@@ -1,6 +1,6 @@
 # BROKEN: Module 12 Exercise 2C — find and fix the tail sampling configuration
 # =============================================================================
-# This config has a deliberate bug: the tailsampling processor has num_traces
+# This config has a deliberate bug: the tail_sampling processor has num_traces
 # set to 50, which is far too low for the lab's default load of 10 rps.
 #
 # Why it matters:
@@ -24,7 +24,7 @@
 #     the load generator is sending
 #
 # How to spot the bug:
-#   Inspect tailsampling.num_traces. At 10 rps with a 10s decision window,
+#   Inspect tail_sampling.num_traces. At 10 rps with a 10s decision window,
 #   a safe minimum is 5000. 50 is 100x too small.
 #
 # Fix:
@@ -33,15 +33,19 @@
 # =============================================================================
 
 receivers:
+  # This config is mounted into otelcol-agent, so it must receive app OTLP on the
+  # agent ports (4317/4318) — the apps export to otelcol-agent:4317.
   otlp:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:4320
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
 
   prometheus/self:
     config:
       scrape_configs:
-        - job_name: otelcol-gateway-self
+        - job_name: otelcol-self
           scrape_interval: 10s
           static_configs:
             - targets:
@@ -53,7 +57,7 @@ processors:
     limit_mib: 768
     spike_limit_mib: 192
 
-  tailsampling:
+  tail_sampling:
     decision_wait: 10s
     # BUG: num_traces is 50 — far too low for 10 rps load.
     # At 10 rps × 10s decision_wait, at least 100 traces must be buffered,
@@ -88,7 +92,7 @@ processors:
         value: lab
         action: upsert
       - key: collector.tier
-        value: gateway
+        value: agent
         action: upsert
 
   batch:
@@ -127,7 +131,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, tailsampling, resource, batch]
+      processors: [memory_limiter, tail_sampling, resource, batch]
       exporters: [otlphttp/newrelic, debug]
 
     metrics:

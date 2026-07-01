@@ -1,0 +1,84 @@
+# =============================================================================
+# collector-agent-exercise.yaml — Module 6 starter skeleton
+# =============================================================================
+# Module 6 (L201) task: build up a working agent Collector config from this
+# skeleton. It is intentionally MINIMAL but VALID — the stack will start and
+# data will flow, but several best-practice pieces are missing on purpose.
+#
+# Compare your result against configs/collector-agent.yaml (the reference
+# solution) when you are done.
+#
+# Your TODOs (each is called out inline below):
+#   1. Add a `resource` processor that upserts deployment.environment=lab and
+#      collector.tier=agent, then add it to every pipeline.
+#   2. Add a `prometheus/self` receiver that scrapes localhost:8888, and wire it
+#      into the metrics pipeline (Collector self-monitoring — see Module 8).
+#   3. Add the `transform/redact-pii` processor to the logs pipeline so the
+#      customer email never leaves the Collector (see Module 7).
+#   4. (Optional) Tune the batch processor and add retry/sending_queue on the
+#      exporter for resilience.
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # TODO 2: add a prometheus/self receiver here that scrapes localhost:8888.
+
+processors:
+  # memory_limiter MUST be first in every pipeline.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  batch:
+    send_batch_size: 1000
+    timeout: 5s
+
+  # TODO 1: add a `resource` processor (deployment.environment=lab, collector.tier=agent).
+  # TODO 3: add a `transform/redact-pii` processor for the logs pipeline.
+
+exporters:
+  otlphttp/newrelic:
+    endpoint: ${env:NR_OTLP_ENDPOINT}
+    headers:
+      api-key: ${env:NR_LICENSE_KEY}
+    compression: gzip
+
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  telemetry:
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+
+  pipelines:
+    # Minimal pipelines. TODO: add `resource` to all three, and `transform/redact-pii`
+    # to logs. TODO: add the prometheus/self receiver to metrics.
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/newrelic, debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/newrelic]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/newrelic]

@@ -108,13 +108,14 @@ docker compose up -d
 Docker will pull the required images on first run (approximately 1–2 GB). Subsequent starts are instant. Expected output:
 
 ```
-[+] Running 5/5
- ✔ Container otelcol-gateway    Started
+[+] Running 4/4
  ✔ Container otelcol-agent      Started
  ✔ Container order-service      Started
  ✔ Container payment-service    Started
  ✔ Container load-generator     Started
 ```
+
+> The `otelcol-gateway` container is **not** started by a plain `docker compose up` — it is gated behind a Compose profile and only used in the Module 9 two-tier exercise. Start it with `docker compose --profile gateway up -d`.
 
 ### Step 4 — Verify the lab is running
 
@@ -162,7 +163,7 @@ docker compose down -v
 
 ### Services Overview
 
-The lab stack runs four containers plus an optional gateway. All services communicate on an internal Docker network (`otel-lab`).
+A plain `docker compose up` runs four containers. A fifth, `otelcol-gateway`, is gated behind the `gateway` Compose profile and only started for the Module 9 two-tier exercise. All services communicate on an internal Docker network (`otel-lab`).
 
 | Container | Image | Port(s) | Role |
 |---|---|---|---|
@@ -170,7 +171,7 @@ The lab stack runs four containers plus an optional gateway. All services commun
 | `payment-service` | python:3.11-slim (custom) | 8081 | Demo application — processes payments |
 | `load-generator` | curlimages/curl:latest | — | Sends continuous HTTP traffic |
 | `otelcol-agent` | otel/opentelemetry-collector-contrib:0.100.0 | 4317, 4318, 8888 | OTLP receiver + NR exporter |
-| `otelcol-gateway` | otel/opentelemetry-collector-contrib:0.100.0 | 4320 | Two-tier gateway (L301 exercises) |
+| `otelcol-gateway` (profile: `gateway`) | otel/opentelemetry-collector-contrib:0.100.0 | 4320 | Two-tier gateway (Module 9). Not started by default — run `docker compose --profile gateway up -d`. |
 
 ### Service Descriptions
 
@@ -180,9 +181,9 @@ The lab stack runs four containers plus an optional gateway. All services commun
 - Creates a manual OpenTelemetry span for each order with custom attributes: `order.id`, `order.item`, `order.quantity`, `user.tier`
 - Calls `payment-service` via HTTP to process payment (demonstrates distributed tracing)
 - Records a span event on order completion
-- Writes structured JSON logs to stdout with injected `traceId` and `spanId`
+- Writes structured JSON logs to stdout **and** emits them as OTLP log records (correlated to the active span, so New Relic links each log to its trace)
 - Respects `SIMULATE_ERRORS` env var: when `true`, 10% of requests return HTTP 500
-- Exports telemetry to `otelcol-agent` via OTLP/gRPC on port 4317
+- Exports traces, metrics, and logs to `otelcol-agent` via OTLP/gRPC on port 4317
 
 **payment-service (Python/Flask, port 8081)**
 
@@ -191,8 +192,8 @@ The lab stack runs four containers plus an optional gateway. All services commun
 - Records custom metrics: `payment.processed` (counter) and `payment.amount` (histogram)
 - Simulates a DB call (random sleep 10–50ms)
 - Respects `SIMULATE_SLOW` env var: when `true`, adds 200–2000ms random latency
-- Writes structured JSON logs with trace context
-- Exports telemetry to `otelcol-agent` via OTLP/gRPC
+- Writes structured JSON logs to stdout **and** emits them as OTLP log records with trace context
+- Exports traces, metrics, and logs to `otelcol-agent` via OTLP/gRPC
 
 **load-generator**
 
@@ -203,17 +204,17 @@ The lab stack runs four containers plus an optional gateway. All services commun
 **otelcol-agent**
 
 - Receives OTLP traces, metrics, and logs from both application services
-- Applies processors: `memory_limiter` (first), `batch`, `resource` (adds `deployment.environment=lab`)
+- Applies processors: `memory_limiter` (first), `batch`, `resource` (adds `deployment.environment=lab`); the logs pipeline also runs `transform/redact-pii`, which strips the customer email before export (Module 7)
 - Exports all signals to New Relic via OTLP/HTTP with gzip compression
 - Exposes self-metrics at `http://localhost:8888/metrics` (Prometheus format)
-- Health check endpoint: `http://localhost:13133`
+- Health check endpoint: `http://localhost:13133`. (The container has **no** Docker `healthcheck` — the collector-contrib image is distroless, so an exec-based probe can't run; liveness is checked via this endpoint.)
 
-**otelcol-gateway (L301 exercises)**
+**otelcol-gateway (Module 9 exercise — profile: `gateway`)**
 
 - Second-tier Collector used in Module 9 two-tier architecture exercises
 - Receives OTLP from `otelcol-agent` on port 4320
 - Applies tail-based sampling before forwarding to New Relic
-- Inactive by default in L101/L201 modules
+- **Not started by default.** It is gated behind the `gateway` Compose profile; start it with `docker compose --profile gateway up -d`, then point `otelcol-agent` at `http://otelcol-gateway:4320`.
 
 ### Architecture Diagram
 
@@ -298,10 +299,10 @@ COLLECTOR_CONFIG=collector-agent.yaml docker compose up -d otelcol-agent
 | M3 — NRDOT Install | L101 | order-service + otelcol-agent | `collector-agent.yaml` | Students install NRDOT, verify data flows from order-service to NR. |
 | M4 — NRQL Basics | L101 | order-service + payment-service + otelcol-agent | `collector-agent.yaml` | Full stack running; students write NRQL against live data. |
 | M5 — Manual Instrumentation | L201 | order-service (modified) | `collector-agent.yaml` | Students modify `order-service.js` to add custom spans and attributes. |
-| M6 — Collector Pipelines | L201 | Both services + otelcol-agent | `collector-agent-exercise.yaml` | Students build their own Collector config from scratch. |
-| M7 — Logs | L201 | Both services + otelcol-agent | `collector-logs.yaml` | Filelog receiver exercise; log-to-trace correlation validation. |
+| M6 — Collector Pipelines | L201 | Both services + otelcol-agent | `collector-agent-exercise.yaml` | Starter skeleton with `TODO` markers; students build up the pipelines from it. |
+| M7 — Logs | L201 | Both services + otelcol-agent | `collector-agent.yaml` | Logs already flow: the apps emit OTLP logs correlated to spans, and the default config redacts the PII email. Students validate log-to-trace correlation and PII redaction. |
 | M8 — Health & Cost | L201 | Full stack + self-monitoring | `collector-selfmon.yaml` | Collector self-metrics dashboard; cost estimation with NRQL. |
-| M9 — Advanced Collector | L301 | Full stack + otelcol-gateway | `collector-gateway.yaml` | Two-tier architecture; tail sampling policies; K8s optional. |
+| M9 — Advanced Collector | L301 | Full stack + otelcol-gateway | `collector-gateway.yaml` | Two-tier architecture; tail sampling policies. Start the gateway with `docker compose --profile gateway up -d`. K8s optional. |
 | M10 — Migration | L301 | order-service (APM → OTel) | — | Students swap a New Relic APM agent for OTel SDK instrumentation. |
 | M11 — Cardinality | L301 | Full stack | `collector-cardinality.yaml` | Cardinality audit; transform processor to drop high-cardinality attributes. |
 | M12 — Incident Response | L301 | Full stack (broken configs) | `collector-broken-*.yaml` | Troubleshooting exercises; students diagnose and fix three broken configs. |
@@ -318,10 +319,11 @@ docker compose up -d
 SIMULATE_ERRORS=true SIMULATE_SLOW=true docker compose up -d
 ```
 
-**L301 (M9, M11–M12):** Full stack with gateway:
+**L301 (M9, M11–M12):** Full stack including the two-tier gateway (add `--profile gateway`):
 ```bash
-SIMULATE_ERRORS=true SIMULATE_SLOW=true docker compose up -d
+SIMULATE_ERRORS=true SIMULATE_SLOW=true docker compose --profile gateway up -d
 ```
+(M11 and M12 don't need the gateway; only M9 does. Omit `--profile gateway` if you're not running the two-tier exercise.)
 
 **M12 only (broken configs):** See Section 8.
 
@@ -487,17 +489,26 @@ SINCE 10 minutes ago
 
 ### Log-Trace Correlation (Module 7)
 
+> Logs arrive as OTLP log records, so New Relic stores the trace linkage in the standard
+> `trace.id` / `span.id` attributes (dotted) — not `traceId` / `spanId`. Use those below.
+
 ```sql
--- Logs with trace context injected
-SELECT message, traceId, spanId, service.name
+-- Logs with trace context (each row links to its trace in the UI)
+SELECT message, trace.id, span.id, service.name
 FROM Log
-WHERE traceId IS NOT NULL
+WHERE trace.id IS NOT NULL
 SINCE 5 minutes ago
 LIMIT 20
 
--- Logs without trace context (should be 0 after Module 7 fix)
+-- Logs without trace context (should be ~0 for the demo services)
 SELECT count(*) FROM Log
-WHERE traceId IS NULL AND service.name IN ('order-service', 'payment-service')
+WHERE trace.id IS NULL AND service.name IN ('order-service', 'payment-service')
+SINCE 5 minutes ago
+
+-- PII redaction check (Module 7): the customer email must NOT appear — it is
+-- redacted at the Collector. This should return 0.
+SELECT count(*) FROM Log
+WHERE message LIKE '%@example.com%' OR user.email IS NOT NULL
 SINCE 5 minutes ago
 ```
 
@@ -748,6 +759,13 @@ Common causes:
 - **Insufficient Docker memory:** Go to Docker Desktop → Settings → Resources → Memory. Set to at least 4096 MB and restart Docker Desktop.
 - **Missing `.env` file:** If `.env` does not exist, Docker Compose cannot substitute variables and some containers will fail to start. Run `cp .env.example .env` and fill in the required values.
 - **Config file not found:** If `COLLECTOR_CONFIG` references a file that does not exist, `otelcol-agent` will exit. Verify the filename in `configs/`.
+
+### "otelcol-agent shows no health status" / "otelcol-gateway is missing"
+
+These are expected, not bugs:
+
+- **No health status on the collectors.** The collector-contrib image is distroless (no shell/`wget`), so the containers intentionally have **no** Docker `healthcheck`. `docker compose ps` shows them as `Up` (never `healthy`/`unhealthy`). Check liveness at `http://localhost:13133` instead. The app services (order/payment) still report `healthy`.
+- **`otelcol-gateway` not listed by `docker compose ps`.** It is gated behind the `gateway` profile and is not started by a plain `docker compose up`. Start it only for the Module 9 exercise with `docker compose --profile gateway up -d`.
 
 ### Load Generator Too Aggressive
 
