@@ -156,7 +156,12 @@ function callPaymentService(orderId, amount, currency) {
             resolve({ raw: body });
           }
         } else {
-          reject(new Error(`payment-service returned ${res.statusCode}: ${body}`));
+          // Carry the downstream status and parsed body so the caller can tell a
+          // business decline (HTTP 402) apart from a genuine service failure (5xx).
+          const err = new Error(`payment-service returned ${res.statusCode}: ${body}`);
+          err.statusCode = res.statusCode;
+          try { err.responseBody = JSON.parse(body); } catch { err.responseBody = null; }
+          reject(err);
         }
       });
     });
@@ -240,12 +245,27 @@ app.post('/orders', async (req, res) => {
       try {
         paymentResult = await callPaymentService(orderId, amount, currency);
       } catch (paymentErr) {
-        span.setStatus({ code: SpanStatusCode.ERROR, message: paymentErr.message });
-        span.setAttribute('error.type', 'payment_error');
         span.recordException(paymentErr);
-        log('ERROR', 'Payment service call failed', { orderId, error: paymentErr.message });
+
+        // A 402 from payment-service is a business DECLINE — the payment was rejected,
+        // not an infrastructure problem. Surface it as a payment error (HTTP 402), not a
+        // bad gateway. Only a connection failure or 5xx from payment-service is a genuine
+        // "downstream unavailable" case, which is what 502 Bad Gateway actually means.
+        if (paymentErr.statusCode === 402) {
+          const reason = paymentErr.responseBody ? paymentErr.responseBody.reason : undefined;
+          span.setStatus({ code: SpanStatusCode.ERROR, message: `payment declined: ${reason || 'unknown'}` });
+          span.setAttribute('error.type', 'payment_declined');
+          if (reason) span.setAttribute('payment.decline_reason', reason);
+          log('ERROR', 'Payment declined', { orderId, reason });
+          span.end();
+          return res.status(402).json({ error: 'Payment declined', reason: reason || 'unknown', order_id: orderId });
+        }
+
+        span.setStatus({ code: SpanStatusCode.ERROR, message: paymentErr.message });
+        span.setAttribute('error.type', 'payment_unavailable');
+        log('ERROR', 'Payment service unavailable', { orderId, error: paymentErr.message });
         span.end();
-        return res.status(502).json({ error: 'Payment processing failed' });
+        return res.status(502).json({ error: 'Payment service unavailable' });
       }
 
       // Record a span event to mark order completion.

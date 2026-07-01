@@ -103,6 +103,12 @@ payment_amount_histogram = meter.create_histogram(
     unit="USD",
 )
 
+payment_failed_counter = meter.create_counter(
+    name="payment.failed",
+    description="Number of payments declined/failed",
+    unit="1",
+)
+
 # =============================================================================
 # Structured JSON Logger
 # Injects traceId and spanId from the active OTel span so that log records
@@ -166,6 +172,13 @@ FlaskInstrumentor().instrument_app(app)
 SIMULATE_SLOW = os.environ.get("SIMULATE_SLOW", "false").lower() == "true"
 PORT = int(os.environ.get("PORT", "8081"))
 
+# Fraction of payments to randomly decline (default 1/50 = 0.02). Set to 0 for
+# all-success runs (e.g. the clean-data L101 M3/M4 exercises). A declined payment
+# errors this span and cascades: order-service marks its span errored and returns
+# HTTP 402 "Payment declined" (a payment error, not a gateway error).
+PAYMENT_ERROR_RATE = float(os.environ.get("PAYMENT_ERROR_RATE", "0.02"))
+DECLINE_REASONS = ["insufficient_funds", "card_declined", "gateway_timeout"]
+
 # Simulated payment gateways (randomly selected per request to vary telemetry)
 GATEWAYS = ["stripe-sim", "paypal-sim", "adyen-sim"]
 
@@ -205,6 +218,29 @@ def process_payment():
             delay = random.uniform(0.200, 2.000)
             log("DEBUG", "Simulated slow processing", delay_ms=round(delay * 1000))
             time.sleep(delay)
+
+        # Simulate a payment gateway decline on a fraction of requests
+        # (PAYMENT_ERROR_RATE, default 1/50). This marks THIS span as errored and
+        # returns HTTP 402, which cascades: order-service sees the 402, errors its own
+        # span (error.type=payment_declined) and returns HTTP 402 "Payment declined" —
+        # so the whole distributed trace shows the failure in New Relic (exception
+        # event, error status) as a payment error rather than a gateway error.
+        if PAYMENT_ERROR_RATE > 0 and random.random() < PAYMENT_ERROR_RATE:
+            reason = random.choice(DECLINE_REASONS)
+            span.set_attribute("error.type", "payment_declined")
+            span.set_attribute("payment.decline_reason", reason)
+            span.add_event("payment.declined", {"payment.gateway": gateway, "decline.reason": reason})
+            span.record_exception(RuntimeError(f"payment declined by {gateway}: {reason}"))
+            span.set_status(Status(StatusCode.ERROR, f"payment declined: {reason}"))
+            payment_failed_counter.add(1, {"payment.gateway": gateway, "decline.reason": reason})
+            log("ERROR", "Payment declined", order_id=order_id, gateway=gateway, reason=reason, amount=amount)
+            return jsonify({
+                "error": "payment declined",
+                "reason": reason,
+                "order_id": order_id,
+                "gateway": gateway,
+                "status": "declined",
+            }), 402
 
         # Simulate a DB write.
         with tracer.start_as_current_span("db.write") as db_span:
@@ -264,7 +300,8 @@ def health():
 # =============================================================================
 
 if __name__ == "__main__":
-    log("INFO", "payment-service starting", port=PORT, simulate_slow=SIMULATE_SLOW, log_level=LOG_LEVEL)
+    log("INFO", "payment-service starting", port=PORT, simulate_slow=SIMULATE_SLOW,
+        payment_error_rate=PAYMENT_ERROR_RATE, log_level=LOG_LEVEL)
     # Use the built-in Flask dev server for the lab (single-threaded is fine).
     # For production use gunicorn or uvicorn.
     app.run(host="0.0.0.0", port=PORT, debug=False)

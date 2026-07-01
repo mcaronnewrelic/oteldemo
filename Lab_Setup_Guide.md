@@ -271,6 +271,7 @@ All variables are set in `.env`. The lab reads them at `docker compose up` time.
 | `LOG_LEVEL` | No | `INFO` | Application log verbosity for both order-service and payment-service. Valid values: `DEBUG`, `INFO`, `WARN`, `ERROR`. Use `DEBUG` when troubleshooting missing trace context in logs. |
 | `SIMULATE_ERRORS` | No | `false` | When `true`, order-service randomly returns HTTP 500 on approximately 10% of order requests. Used in Module 12 incident response exercises. |
 | `SIMULATE_SLOW` | No | `false` | When `true`, payment-service adds a random delay of 200–2000ms to each payment. Used in Module 9 tail sampling and Module 12 latency exercises. |
+| `PAYMENT_ERROR_RATE` | No | `0.02` | Fraction of payments that payment-service randomly declines (HTTP 402). The error cascades to order-service (errored span, returns HTTP 402 "Payment declined" — a payment error, not a gateway error), producing failed distributed traces. Default `0.02` = **1 in 50 orders fail** out of the box. Set to `0` for all-success runs (clean L101 M3/M4 data); raise (e.g. `0.2`) for a heavier error-rate demo. |
 | `COLLECTOR_CONFIG` | No | `collector-agent.yaml` | Filename (relative to `configs/`) of the Collector config to mount into `otelcol-agent`. Change this to swap configs without modifying `docker-compose.yml`. |
 
 ### Switching Collector Configs at Runtime
@@ -368,6 +369,34 @@ curl -X POST http://localhost:8080/orders \
 # Enable random 500 errors without restarting the stack
 # (requires setting SIMULATE_ERRORS=true in .env first, then restart order-service)
 docker compose restart order-service
+```
+
+#### Cascading payment failures (on by default)
+
+By default, `payment-service` declines **1 in 50** payments (`PAYMENT_ERROR_RATE=0.02`),
+returning HTTP 402 with a random reason (`insufficient_funds`, `card_declined`, or
+`gateway_timeout`). This is a realistic downstream failure that **cascades up the trace**:
+
+- `payment-service` `process-payment` span → status ERROR, `error.type=payment_declined`, an
+  `exception` event, and a `payment.declined` span event; the `payment.failed` metric increments.
+  It responds **HTTP 402**.
+- `order-service` recognises the 402 as a payment decline (not a gateway failure), so its
+  `process-order` span → status ERROR, `error.type=payment_declined`,
+  `payment.decline_reason=<reason>`, records the exception, and the request returns
+  **HTTP 402** `{"error":"Payment declined","reason":...}`.
+
+So a single declined payment produces a fully-errored distributed trace across both services —
+ideal for demonstrating what an error looks like in New Relic (errors inbox, error rate, the
+red spans in the distributed trace waterfall). Note the status is **402 (a payment error)**,
+not 502/503 — order-service only returns **502 Bad Gateway** when payment-service is genuinely
+unreachable or returns a 5xx (e.g. if you stop the container: `docker compose stop payment-service`).
+
+```bash
+# Turn the failures OFF for a clean run:
+PAYMENT_ERROR_RATE=0 docker compose up -d order-service payment-service
+
+# Crank them UP for an obvious demo (1 in 5):
+PAYMENT_ERROR_RATE=0.2 docker compose up -d order-service payment-service
 ```
 
 ### Health and Observability Checks
@@ -528,6 +557,40 @@ FROM Metric
 WHERE job = 'otelcol-self'
 TIMESERIES 1 minute
 SINCE 30 minutes ago
+```
+
+### Cascading Payment Failures (on by default — `PAYMENT_ERROR_RATE`)
+
+```sql
+-- Errored spans across both services (should be ~2% at the default rate)
+SELECT count(*) FROM Span
+WHERE otel.status_code = 'ERROR'
+FACET service.name, name
+SINCE 15 minutes ago
+
+-- Overall span error rate per service
+SELECT percentage(count(*), WHERE otel.status_code = 'ERROR') AS 'Error %'
+FROM Span
+FACET service.name
+TIMESERIES 1 minute
+SINCE 15 minutes ago
+
+-- Decline reasons from the payment span attribute
+SELECT count(*) FROM Span
+WHERE service.name = 'payment-service' AND payment.decline_reason IS NOT NULL
+FACET payment.decline_reason, payment.gateway
+SINCE 15 minutes ago
+
+-- The payment.failed metric (increments once per decline)
+SELECT sum(payment.failed) FROM Metric
+FACET decline.reason
+TIMESERIES 1 minute
+SINCE 15 minutes ago
+
+-- Find a full failed trace to open in the distributed-trace waterfall
+SELECT trace.id FROM Span
+WHERE service.name = 'order-service' AND otel.status_code = 'ERROR'
+SINCE 15 minutes ago LIMIT 5
 ```
 
 ### Error Rate Verification (SIMULATE_ERRORS=true)

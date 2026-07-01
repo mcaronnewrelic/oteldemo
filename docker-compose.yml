@@ -76,6 +76,8 @@ services:
       PORT: "8081"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SIMULATE_SLOW: ${SIMULATE_SLOW:-false}
+      # Fraction of payments randomly declined (default 1/50). Set to 0 for clean runs.
+      PAYMENT_ERROR_RATE: ${PAYMENT_ERROR_RATE:-0.02}
     networks:
       - otel-lab
     depends_on:
