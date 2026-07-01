@@ -2,3 +2,4 @@
 # Python bytecode (from local syntax checks)
 __pycache__/
 *.pyc
+.env
