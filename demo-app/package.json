@@ -9,15 +9,18 @@
   "engines": {
     "node": ">=20.0.0"
   },
+  "comment": "Versions are pinned exactly (no ^ ranges). Unpinned OTel deps drifted in and broke this lab; keep these locked and bump deliberately.",
   "dependencies": {
-    "express": "^4.19.2",
-    "@opentelemetry/sdk-node": "^0.51.1",
-    "@opentelemetry/auto-instrumentations-node": "^0.46.1",
-    "@opentelemetry/exporter-trace-otlp-grpc": "^0.51.1",
-    "@opentelemetry/exporter-metrics-otlp-grpc": "^0.51.1",
-    "@opentelemetry/api": "^1.8.0",
-    "@opentelemetry/sdk-metrics": "^1.24.1",
-    "uuid": "^9.0.1",
-    "nodemon": "^3.1.4"
+    "express": "4.22.2",
+    "@opentelemetry/api": "1.8.0",
+    "@opentelemetry/api-logs": "0.51.1",
+    "@opentelemetry/sdk-node": "0.51.1",
+    "@opentelemetry/sdk-metrics": "1.30.1",
+    "@opentelemetry/sdk-logs": "0.51.1",
+    "@opentelemetry/auto-instrumentations-node": "0.46.1",
+    "@opentelemetry/exporter-trace-otlp-grpc": "0.51.1",
+    "@opentelemetry/exporter-metrics-otlp-grpc": "0.51.1",
+    "@opentelemetry/exporter-logs-otlp-grpc": "0.51.1",
+    "uuid": "9.0.1"
   }
 }

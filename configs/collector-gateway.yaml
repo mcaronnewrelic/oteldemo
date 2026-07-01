@@ -45,7 +45,7 @@ processors:
   # num_traces: the number of in-flight traces the processor holds in memory.
   # At 10 rps with ~200ms average trace duration, 5000 is a comfortable buffer.
   # decision_wait: how long to wait for all spans before making a decision.
-  tailsampling:
+  tail_sampling:
     decision_wait: 10s
     num_traces: 5000
     expected_new_traces_per_sec: 10
@@ -126,12 +126,12 @@ service:
       address: 0.0.0.0:8888
 
   pipelines:
-    # Traces pipeline — tail sampling requires traces to flow through tailsampling
+    # Traces pipeline — tail sampling requires traces to flow through tail_sampling
     # BEFORE batch. The correct order is:
-    #   memory_limiter → tailsampling → resource → batch → exporter
+    #   memory_limiter → tail_sampling → resource → batch → exporter
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, tailsampling, resource, batch]
+      processors: [memory_limiter, tail_sampling, resource, batch]
       exporters: [otlphttp/newrelic, debug]
 
     metrics:

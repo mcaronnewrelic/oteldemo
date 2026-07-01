@@ -1,31 +1,37 @@
 # payment-service dependencies
 # OTel Mastery Lab — Python 3.11+
+#
+# Versions are PINNED exactly (== , not >=). Unpinned OTel deps drifted in and broke
+# this lab; keep these locked and bump deliberately. The logs SDK (LoggerProvider,
+# LoggingHandler) ships inside opentelemetry-sdk and the gRPC log exporter ships inside
+# opentelemetry-exporter-otlp-proto-grpc, so no extra package is needed for OTLP logs.
 
 # Web framework
-flask>=3.0.3
+flask==3.1.3
 
-# OpenTelemetry SDK — core
-opentelemetry-sdk>=1.24.0
+# OpenTelemetry SDK — core (includes the logs SDK: opentelemetry.sdk._logs)
+opentelemetry-sdk==1.43.0
 
-# OTLP exporters (gRPC protocol — matches OTEL_EXPORTER_OTLP_PROTOCOL=grpc)
-opentelemetry-exporter-otlp-proto-grpc>=1.24.0
+# OTLP exporters (gRPC protocol — matches OTEL_EXPORTER_OTLP_PROTOCOL=grpc).
+# Provides trace, metric, AND log (_log_exporter.OTLPLogExporter) exporters.
+opentelemetry-exporter-otlp-proto-grpc==1.43.0
 
 # Auto-instrumentation for Flask (wraps routes with spans automatically)
-opentelemetry-instrumentation-flask>=0.45b0
+opentelemetry-instrumentation-flask==0.64b0
 
 # Auto-instrumentation for outbound HTTP requests via the requests library
-opentelemetry-instrumentation-requests>=0.45b0
+opentelemetry-instrumentation-requests==0.64b0
 
 # File watcher used by the Kubernetes lab to hot-reload payment-service.py on
 # edit (watchmedo auto-restart). Not used by the docker-compose CMD.
-watchdog>=4.0.0
+watchdog==6.0.0
 
 # The OTel requests instrumentation imports the requests library at load time,
 # so it must be installed even though payment-service makes no outbound calls.
-requests>=2.31.0
+requests==2.34.2
 
 # New Relic Python APM agent. Used ONLY by the 301 migration challenge, where
 # payment-service.apm.py runs under `newrelic-admin run-program` instead of OTel.
 # Installing it here is inert for the 101/201 labs (it is never imported unless
 # the service is launched via the agent), so it does not affect those labs.
-newrelic>=9.0.0
+newrelic==13.1.1

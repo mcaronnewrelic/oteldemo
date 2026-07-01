@@ -55,6 +55,16 @@ processors:
         value: agent
         action: upsert
 
+  # PII redaction (Module 7): order-service deliberately carries the customer email in
+  # its log records (never on the span). Scrub it from the log body and drop the parsed
+  # attribute at the Collector, BEFORE the logs leave for New Relic.
+  transform/redact-pii:
+    log_statements:
+      - context: log
+        statements:
+          - replace_pattern(body, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")
+          - delete_key(attributes, "user.email")
+
 exporters:
   otlphttp/newrelic:
     endpoint: ${env:NR_OTLP_ENDPOINT}
@@ -111,5 +121,5 @@ service:
 
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
+      processors: [memory_limiter, resource, transform/redact-pii, batch]
       exporters: [otlphttp/newrelic]

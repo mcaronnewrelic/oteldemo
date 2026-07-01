@@ -1,5 +1,3 @@
-version: "3.9"
-
 # =============================================================================
 # OTel Mastery Lab — Docker Compose Stack
 # =============================================================================
@@ -41,10 +39,15 @@ services:
     networks:
       - otel-lab
     depends_on:
+      # Start after the collector's container exists. We use service_started (not
+      # service_healthy) because the collector image is distroless and cannot run an
+      # exec healthcheck; the OTLP SDK exporter retries until the collector is listening.
       otelcol-agent:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      # Use 127.0.0.1, not localhost: busybox wget resolves localhost to IPv6 ::1, but the
+      # app binds 0.0.0.0 (IPv4 only), so a localhost probe gets connection-refused.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -76,10 +79,11 @@ services:
     networks:
       - otel-lab
     depends_on:
+      # See order-service: service_started, not service_healthy (distroless collector).
       otelcol-agent:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health')"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -108,25 +112,22 @@ services:
       NR_OTLP_ENDPOINT: ${NR_OTLP_ENDPOINT:-https://otlp.nr-data.net}
     networks:
       - otel-lab
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:13133"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+    # No container healthcheck: the collector-contrib image is distroless (no wget/sh),
+    # so an exec-based healthcheck can never succeed and would wedge dependents. Liveness
+    # is instead exposed by the health_check extension at http://localhost:13133 for humans.
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
   # otelcol-gateway — OpenTelemetry Collector (gateway tier)
-  # Used in L301 two-tier architecture exercises (Module 9).
-  # Receives OTLP from otelcol-agent on port 4320, applies tail sampling,
-  # then exports to New Relic.
-  # This service starts but is effectively bypassed in L101/L201 because
-  # otelcol-agent exports directly to NR in those configs.
+  # Used in the Module 9 two-tier / tail-sampling exercise. It is NOT started by a
+  # plain `docker compose up` (L101/L201, where the agent exports directly to NR).
+  # Opt in with:  docker compose --profile gateway up -d
+  # then reconfigure otelcol-agent to export to http://otelcol-gateway:4320.
   # ---------------------------------------------------------------------------
   otelcol-gateway:
     image: otel/opentelemetry-collector-contrib:0.100.0
     container_name: otelcol-gateway
+    profiles: ["gateway"]
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./configs/collector-gateway.yaml:/etc/otelcol/config.yaml:ro
@@ -140,7 +141,7 @@ services:
       - otel-lab
     depends_on:
       otelcol-agent:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -154,20 +155,24 @@ services:
     image: curlimages/curl:latest
     container_name: load-generator
     entrypoint: ["/bin/sh", "-c"]
+    # NOTE: every shell '$' below is escaped as '$$' so Docker Compose passes it through
+    # to the shell instead of interpolating it at compose-parse time. Without this, $RATE,
+    # $ITEM, $QTY, $RANDOM and the $(...) subshells expand to empty strings, producing
+    # malformed JSON ({"quantity":,...}) and a `sleep ""` spin-loop — no valid traffic.
     command:
       - |
-        RATE=${LOAD_RATE:-10}
-        SLEEP_MS=$(echo "scale=4; 1/$RATE" | bc 2>/dev/null || echo "0.1")
-        echo "Load generator starting: ${RATE} rps (sleep ${SLEEP_MS}s between requests)"
+        RATE=$${LOAD_RATE:-10}
+        SLEEP_MS=$$(echo "scale=4; 1/$$RATE" | bc 2>/dev/null || echo "0.1")
+        echo "Load generator starting: $${RATE} rps (sleep $${SLEEP_MS}s between requests)"
         while true; do
-          TIER=$( [ $(( RANDOM % 2 )) -eq 0 ] && echo "premium" || echo "standard" )
-          QTY=$(( (RANDOM % 20) + 1 ))
+          TIER=$$( [ $$(( RANDOM % 2 )) -eq 0 ] && echo "premium" || echo "standard" )
+          QTY=$$(( (RANDOM % 20) + 1 ))
           ITEMS="widget gadget component module package"
-          ITEM=$(echo $ITEMS | tr ' ' '\n' | sed -n "$((RANDOM % 5 + 1))p")
+          ITEM=$$(echo $$ITEMS | tr ' ' '\n' | sed -n "$$((RANDOM % 5 + 1))p")
           curl -s -o /dev/null -w "" -X POST http://order-service:8080/orders \
             -H "Content-Type: application/json" \
-            -d "{\"item\":\"${ITEM}\",\"quantity\":${QTY},\"user_tier\":\"${TIER}\"}"
-          sleep "${SLEEP_MS}"
+            -d "{\"item\":\"$${ITEM}\",\"quantity\":$${QTY},\"user_tier\":\"$${TIER}\"}"
+          sleep "$${SLEEP_MS}"
         done
     environment:
       LOAD_RATE: ${LOAD_RATE:-10}

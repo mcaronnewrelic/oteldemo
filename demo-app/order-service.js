@@ -23,16 +23,21 @@ const { NodeSDK } = require('@opentelemetry/sdk-node');
 const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
 const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-grpc');
 const { OTLPMetricExporter } = require('@opentelemetry/exporter-metrics-otlp-grpc');
+const { OTLPLogExporter } = require('@opentelemetry/exporter-logs-otlp-grpc');
 const { PeriodicExportingMetricReader } = require('@opentelemetry/sdk-metrics');
+const { BatchLogRecordProcessor } = require('@opentelemetry/sdk-logs');
 
 // Initialise the SDK synchronously before loading Express or any other module.
 // All configuration (endpoint, service name, resource attributes) comes from env vars.
+// Registering a logRecordProcessor makes the SDK the global LoggerProvider, so logs
+// emitted via @opentelemetry/api-logs are exported over OTLP alongside traces/metrics.
 const sdk = new NodeSDK({
   traceExporter: new OTLPTraceExporter(),
   metricReader: new PeriodicExportingMetricReader({
     exporter: new OTLPMetricExporter(),
     exportIntervalMillis: 10000,
   }),
+  logRecordProcessor: new BatchLogRecordProcessor(new OTLPLogExporter()),
   instrumentations: [
     getNodeAutoInstrumentations({
       // Disable noisy fs instrumentation; keep HTTP and Express.
@@ -58,6 +63,7 @@ const express = require('express');
 const http = require('http');
 const { v4: uuidv4 } = require('uuid');
 const { trace, context, SpanStatusCode } = require('@opentelemetry/api');
+const { logs, SeverityNumber } = require('@opentelemetry/api-logs');
 
 const app = express();
 app.use(express.json());
@@ -74,6 +80,18 @@ const LOG_LEVEL = (process.env.LOG_LEVEL || 'INFO').toUpperCase();
 // =============================================================================
 const LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
 const configuredLevel = LEVELS[LOG_LEVEL] ?? LEVELS.INFO;
+
+// Maps our string levels to OTel severity numbers for the OTLP log records.
+const OTEL_SEVERITY = {
+  DEBUG: SeverityNumber.DEBUG,
+  INFO: SeverityNumber.INFO,
+  WARN: SeverityNumber.WARN,
+  ERROR: SeverityNumber.ERROR,
+};
+
+// OTel logger — emits OTLP log records. Emitting inside the active span makes the SDK
+// stamp trace_id/span_id on each record, so New Relic correlates the log with the trace.
+const otelLogger = logs.getLogger('order-service', '1.0.0');
 
 function log(level, message, extra = {}) {
   if ((LEVELS[level] ?? 0) < configuredLevel) return;
@@ -94,7 +112,17 @@ function log(level, message, extra = {}) {
   // Remove undefined keys so the JSON output is clean.
   Object.keys(entry).forEach(k => entry[k] === undefined && delete entry[k]);
 
+  // Human-readable structured line on stdout (unchanged).
   process.stdout.write(JSON.stringify(entry) + '\n');
+
+  // Ship the same record to New Relic over OTLP, correlated to the active span.
+  // The customer email in `extra` is carried through and redacted at the Collector.
+  otelLogger.emit({
+    severityNumber: OTEL_SEVERITY[level] ?? SeverityNumber.INFO,
+    severityText: level,
+    body: message,
+    attributes: extra,
+  });
 }
 
 // =============================================================================

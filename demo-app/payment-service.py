@@ -32,8 +32,12 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
 from opentelemetry.trace import Status, StatusCode
@@ -63,6 +67,14 @@ _metric_reader = PeriodicExportingMetricReader(
 )
 _meter_provider = MeterProvider(resource=_resource, metric_readers=[_metric_reader])
 metrics.set_meter_provider(_meter_provider)
+
+# Log provider — exports log records over OTLP (same endpoint as traces/metrics).
+# A LoggingHandler bridges the stdlib logging module to OTLP; because it reads the
+# current span context, each emitted record carries trace_id/span_id so New Relic
+# correlates the log with its trace.
+_logger_provider = LoggerProvider(resource=_resource)
+_logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
+set_logger_provider(_logger_provider)
 
 # Auto-instrument requests globally. Flask is instrumented per-app below, after
 # the app object exists (instrument_app is the reliable form; the global
@@ -104,9 +116,18 @@ _configured_level = LOG_LEVELS.get(LOG_LEVEL, 20)
 # Suppress default Flask / Werkzeug logging to avoid duplicate output.
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
+# Bridge stdlib logging -> OTLP. The OTel LoggingHandler stamps trace_id/span_id from
+# the active span onto each record. propagate=False keeps these off the root logger so
+# they are not double-printed to stderr.
+_otel_handler = LoggingHandler(level=logging.NOTSET, logger_provider=_logger_provider)
+_otel_logger = logging.getLogger("payment-service")
+_otel_logger.setLevel(logging.DEBUG)
+_otel_logger.addHandler(_otel_handler)
+_otel_logger.propagate = False
+
 
 def log(level: str, message: str, **extra):
-    """Write a structured JSON log line to stdout."""
+    """Write a structured JSON log line to stdout and emit it over OTLP."""
     if LOG_LEVELS.get(level.upper(), 20) < _configured_level:
         return
 
@@ -126,7 +147,13 @@ def log(level: str, message: str, **extra):
         entry["spanId"] = format(ctx.span_id, "016x")
 
     entry.update(extra)
+    # Human-readable structured line on stdout (unchanged).
     print(json.dumps(entry), flush=True)
+
+    # Ship to New Relic over OTLP, correlated to the active span. Business fields go on
+    # the record as attributes; WARN maps to Python's WARNING level.
+    py_level = logging.WARNING if level.upper() == "WARN" else LOG_LEVELS.get(level.upper(), 20)
+    _otel_logger.log(py_level, message, extra=extra)
 
 
 # =============================================================================
